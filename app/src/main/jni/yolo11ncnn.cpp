@@ -28,6 +28,7 @@
 #include <benchmark.h>
 
 #include "yolo11.h"
+#include "apriltag_detector.h"
 
 #include "ndkcamera.h"
 
@@ -118,6 +119,8 @@ static std::atomic<int> g_display_rotation{0};
 static JavaVM* g_jvm_global = nullptr;
 // Global reference to the registered MainActivity instance (set via registerActivity)
 static jobject g_main_activity_global = nullptr;
+// AprilTag detector — created once, reused every frame
+static AprilTagDetector* g_apriltag = nullptr;
 
 class MyNdkCamera : public NdkCameraWindow
 {
@@ -144,77 +147,84 @@ void MyNdkCamera::on_image_render(cv::Mat& rgb) const
         rgb = tmp;
     }
 
-    // yolo11
+    std::vector<Object> yolo_objects;
+    std::vector<AprilTagDetection> atags;
+
+    // ---- YOLO11 detection ------------------------------------------------
     {
         ncnn::MutexLockGuard g(lock);
 
         if (g_yolo11)
         {
-            std::vector<Object> objects;
-            g_yolo11->detect(rgb, objects);
-
-            g_yolo11->draw(rgb, objects);
-            // If we have detections, convert to JSON and call back into Java
-            if (!objects.empty() && g_jvm_global != nullptr)
-            {
-                std::string json = "[";
-                for (size_t i = 0; i < objects.size(); i++)
-                {
-                    const Object& o = objects[i];
-                    float x = o.rect.x;
-                    float y = o.rect.y;
-                    float w = o.rect.width;
-                    float h = o.rect.height;
-                    int label = o.label;
-                    float prob = o.prob;
-                    char buf[256];
-                    snprintf(buf, sizeof(buf), "{\"label\":%d,\"x\":%.1f,\"y\":%.1f,\"w\":%.1f,\"h\":%.1f,\"score\":%.4f}", label, x, y, w, h, prob);
-                    json += buf;
-                    if (i + 1 < objects.size()) json += ",";
-                }
-                json += "]";
-
-                // Attach to JVM and call MainActivity.pushDetectionsToScripts using the registered activity
-                JNIEnv* env = nullptr;
-                bool attached = false;
-                if (g_jvm_global->GetEnv((void**)&env, JNI_VERSION_1_4) == JNI_EDETACHED)
-                {
-                    if (g_jvm_global->AttachCurrentThread(&env, NULL) == 0)
-                    {
-                        attached = true;
-                    }
-                    else
-                    {
-                        env = nullptr;
-                    }
-                }
-
-                if (env && g_main_activity_global != nullptr)
-                {
-                    // Get the MainActivity class from the global activity reference
-                    jclass cls = env->GetObjectClass(g_main_activity_global);
-                    if (cls)
-                    {
-                        // Call the static helper defined on MainActivity
-                        jmethodID mid = env->GetStaticMethodID(cls, "pushDetectionsToScripts", "(Ljava/lang/String;)V");
-                        if (mid)
-                        {
-                            jstring jstr = env->NewStringUTF(json.c_str());
-                            env->CallStaticVoidMethod(cls, mid, jstr);
-                            env->DeleteLocalRef(jstr);
-                        }
-                        env->DeleteLocalRef(cls);
-                    }
-                }
-
-                if (env && attached)
-                    g_jvm_global->DetachCurrentThread();
-            }
+            g_yolo11->detect(rgb, yolo_objects);
+            g_yolo11->draw(rgb, yolo_objects);
         }
         else
         {
             draw_unsupported(rgb);
         }
+    }
+
+    // ---- AprilTag detection (independent of YOLO lock) -------------------
+    if (g_apriltag)
+    {
+        cv::Mat gray;
+        cv::cvtColor(rgb, gray, CV_BGR2GRAY);
+        g_apriltag->detect(gray, atags);
+        g_apriltag->draw(rgb, atags);
+    }
+
+    // ---- Broadcast combined JSON when anything is detected ---------------
+    if ((!yolo_objects.empty() || !atags.empty()) && g_jvm_global != nullptr)
+    {
+        // Build "yolo" array
+        std::string yolo_json = "[";
+        for (size_t i = 0; i < yolo_objects.size(); i++)
+        {
+            const Object& o = yolo_objects[i];
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "{\"label\":%d,\"x\":%.1f,\"y\":%.1f,\"w\":%.1f,\"h\":%.1f,\"score\":%.4f}",
+                o.label, o.rect.x, o.rect.y, o.rect.width, o.rect.height, o.prob);
+            yolo_json += buf;
+            if (i + 1 < yolo_objects.size()) yolo_json += ",";
+        }
+        yolo_json += "]";
+
+        // Combined payload: {"yolo":[...], "apriltags":[...]}
+        std::string json = "{\"yolo\":" + yolo_json
+            + ",\"apriltags\":" + AprilTagDetector::toJson(atags) + "}";
+
+        // Attach to JVM and call MainActivity.pushDetectionsToScripts
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        if (g_jvm_global->GetEnv((void**)&env, JNI_VERSION_1_4) == JNI_EDETACHED)
+        {
+            if (g_jvm_global->AttachCurrentThread(&env, NULL) == 0)
+                attached = true;
+            else
+                env = nullptr;
+        }
+
+        if (env && g_main_activity_global != nullptr)
+        {
+            jclass cls = env->GetObjectClass(g_main_activity_global);
+            if (cls)
+            {
+                jmethodID mid = env->GetStaticMethodID(cls,
+                    "pushDetectionsToScripts", "(Ljava/lang/String;)V");
+                if (mid)
+                {
+                    jstring jstr = env->NewStringUTF(json.c_str());
+                    env->CallStaticVoidMethod(cls, mid, jstr);
+                    env->DeleteLocalRef(jstr);
+                }
+                env->DeleteLocalRef(cls);
+            }
+        }
+
+        if (env && attached)
+            g_jvm_global->DetachCurrentThread();
     }
 
     draw_fps(rgb);
@@ -232,6 +242,9 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
 
     // store JavaVM for callbacks
     g_jvm_global = vm;
+
+    // create AprilTag detector once; reused for every frame
+    g_apriltag = new AprilTagDetector;
 
     ncnn::create_gpu_instance();
 
@@ -264,6 +277,9 @@ JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved)
         delete g_yolo11;
         g_yolo11 = 0;
     }
+
+    delete g_apriltag;
+    g_apriltag = nullptr;
 
     ncnn::destroy_gpu_instance();
 

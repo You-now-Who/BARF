@@ -8,6 +8,7 @@ app/build/
 app/build/
 .gradle/
 .gradle
+app/.cxx/
 .gradle/file-system.probe
 .gradle/8.12/executionHistory/executionHistory.bin
 .gradle/8.12/executionHistory/executionHistory.lock
