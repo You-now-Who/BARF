@@ -700,7 +700,7 @@ git commit -m "refactor: split MainActivity god object into camera/vision/serial
 
 ---
 
-## PHASE 3 — Native C++ Cleanup
+## ✅ PHASE 3 — Native C++ Cleanup (done)
 
 ### Step 3.1 — Wrap native globals in context struct
 
