@@ -26,6 +26,7 @@ import com.barf.camera.CameraManager;
 import com.barf.camera.VideoStreamManager;
 import com.barf.robot.RobotController;
 import com.barf.runtime.JsRuntime;
+import com.barf.runtime.WasmRuntime;
 import com.barf.server.PhoneApiServer;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback, PhoneApiServer.ServerCallback {
@@ -37,6 +38,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private RobotController robotController;
     private PhoneApiServer apiServer;
     private JsRuntime jsRuntime;
+    private WasmRuntime wasmRuntime;
     private VideoStreamManager videoStreamManager;
     private SurfaceView cameraView;
     private static PhoneApiServer sApiServerStatic = null;
@@ -109,6 +111,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
                 @Override public void onStop() { robotController.stop(); }
             });
             apiServer.setJsRuntime(jsRuntime);
+            wasmRuntime = new WasmRuntime();
+            apiServer.setWasmRuntime(wasmRuntime);
             apiServer.setCallback(this);
             yolo.registerActivity(this);
             apiServer.start();

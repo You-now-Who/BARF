@@ -55,6 +55,7 @@ add_library(yolo11ncnn SHARED
     yolo11_obb.cpp
     ndkcamera.cpp
     apriltag_detector.cpp
+    wasm_runtime.cpp
     ${APRILTAG_SRCS}
 )
 

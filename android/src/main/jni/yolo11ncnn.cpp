@@ -112,15 +112,18 @@ static int draw_fps(cv::Mat& rgb)
     return 0;
 }
 
-static YOLO11* g_yolo11 = 0;
-static ncnn::Mutex lock;
-static std::atomic<int> g_display_rotation{0};
-// JavaVM pointer stored so native thread can call back into Java
-static JavaVM* g_jvm_global = nullptr;
-// Global reference to the registered MainActivity instance (set via registerActivity)
-static jobject g_main_activity_global = nullptr;
-// AprilTag detector — created once, reused every frame
-static AprilTagDetector* g_apriltag = nullptr;
+class MyNdkCamera;
+struct AppContext {
+    YOLO11* yolo = nullptr;
+    MyNdkCamera* camera = nullptr;
+    AprilTagDetector* apriltag = nullptr;
+    JavaVM* jvm = nullptr;
+    jobject main_activity = nullptr;
+    std::atomic<int> display_rotation{0};
+    ncnn::Mutex lock;
+};
+
+static AppContext g_ctx;
 
 class MyNdkCamera : public NdkCameraWindow
 {
@@ -131,7 +134,7 @@ public:
 void MyNdkCamera::on_image_render(cv::Mat& rgb) const
 {
     // apply display rotation to the incoming frame if requested
-    int rot = g_display_rotation.load();
+    int rot = g_ctx.display_rotation.load();
     if (rot == 90)
     {
         cv::Mat tmp;
@@ -152,12 +155,12 @@ void MyNdkCamera::on_image_render(cv::Mat& rgb) const
 
     // ---- YOLO11 detection ------------------------------------------------
     {
-        ncnn::MutexLockGuard g(lock);
+        ncnn::MutexLockGuard g(g_ctx.lock);
 
-        if (g_yolo11)
+        if (g_ctx.yolo)
         {
-            g_yolo11->detect(rgb, yolo_objects);
-            g_yolo11->draw(rgb, yolo_objects);
+            g_ctx.yolo->detect(rgb, yolo_objects);
+            g_ctx.yolo->draw(rgb, yolo_objects);
         }
         else
         {
@@ -166,16 +169,16 @@ void MyNdkCamera::on_image_render(cv::Mat& rgb) const
     }
 
     // ---- AprilTag detection (independent of YOLO lock) -------------------
-    if (g_apriltag)
+    if (g_ctx.apriltag)
     {
         cv::Mat gray;
         cv::cvtColor(rgb, gray, CV_BGR2GRAY);
-        g_apriltag->detect(gray, atags);
-        g_apriltag->draw(rgb, atags);
+        g_ctx.apriltag->detect(gray, atags);
+        g_ctx.apriltag->draw(rgb, atags);
     }
 
     // ---- Broadcast combined JSON when anything is detected ---------------
-    if ((!yolo_objects.empty() || !atags.empty()) && g_jvm_global != nullptr)
+    if ((!yolo_objects.empty() || !atags.empty()) && g_ctx.jvm != nullptr)
     {
         // Build "yolo" array
         std::string yolo_json = "[";
@@ -198,17 +201,17 @@ void MyNdkCamera::on_image_render(cv::Mat& rgb) const
         // Attach to JVM and call MainActivity.pushDetectionsToScripts
         JNIEnv* env = nullptr;
         bool attached = false;
-        if (g_jvm_global->GetEnv((void**)&env, JNI_VERSION_1_4) == JNI_EDETACHED)
+        if (g_ctx.jvm->GetEnv((void**)&env, JNI_VERSION_1_4) == JNI_EDETACHED)
         {
-            if (g_jvm_global->AttachCurrentThread(&env, NULL) == 0)
+            if (g_ctx.jvm->AttachCurrentThread(&env, NULL) == 0)
                 attached = true;
             else
                 env = nullptr;
         }
 
-        if (env && g_main_activity_global != nullptr)
+        if (env && g_ctx.main_activity != nullptr)
         {
-            jclass cls = env->GetObjectClass(g_main_activity_global);
+            jclass cls = env->GetObjectClass(g_ctx.main_activity);
             if (cls)
             {
                 jmethodID mid = env->GetStaticMethodID(cls,
@@ -224,13 +227,11 @@ void MyNdkCamera::on_image_render(cv::Mat& rgb) const
         }
 
         if (env && attached)
-            g_jvm_global->DetachCurrentThread();
+            g_ctx.jvm->DetachCurrentThread();
     }
 
     draw_fps(rgb);
 }
-
-static MyNdkCamera* g_camera = 0;
 
 extern "C" {
 
@@ -238,13 +239,13 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
 {
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "JNI_OnLoad");
 
-    g_camera = new MyNdkCamera;
+    g_ctx.camera = new MyNdkCamera;
 
     // store JavaVM for callbacks
-    g_jvm_global = vm;
+    g_ctx.jvm = vm;
 
     // create AprilTag detector once; reused for every frame
-    g_apriltag = new AprilTagDetector;
+    g_ctx.apriltag = new AprilTagDetector;
 
     ncnn::create_gpu_instance();
 
@@ -255,15 +256,15 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
 JNIEXPORT void JNICALL Java_com_barf_YoloBridge_registerActivity(JNIEnv* env, jobject thiz, jobject activity)
 {
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "registerActivity called");
-    if (g_main_activity_global != nullptr)
+    if (g_ctx.main_activity != nullptr)
     {
-        env->DeleteGlobalRef(g_main_activity_global);
-        g_main_activity_global = nullptr;
+        env->DeleteGlobalRef(g_ctx.main_activity);
+        g_ctx.main_activity = nullptr;
     }
 
     if (activity != nullptr)
     {
-        g_main_activity_global = env->NewGlobalRef(activity);
+        g_ctx.main_activity = env->NewGlobalRef(activity);
     }
 }
 
@@ -272,27 +273,27 @@ JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved)
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "JNI_OnUnload");
 
     {
-        ncnn::MutexLockGuard g(lock);
+        ncnn::MutexLockGuard g(g_ctx.lock);
 
-        delete g_yolo11;
-        g_yolo11 = 0;
+        delete g_ctx.yolo;
+        g_ctx.yolo = 0;
     }
 
-    delete g_apriltag;
-    g_apriltag = nullptr;
+    delete g_ctx.apriltag;
+    g_ctx.apriltag = nullptr;
 
     ncnn::destroy_gpu_instance();
 
-    delete g_camera;
-    g_camera = 0;
-    if (g_main_activity_global != nullptr)
+    delete g_ctx.camera;
+    g_ctx.camera = 0;
+    if (g_ctx.main_activity != nullptr)
     {
         JNIEnv* env = nullptr;
-        if (g_jvm_global && g_jvm_global->GetEnv((void**)&env, JNI_VERSION_1_4) == JNI_OK)
+        if (g_ctx.jvm && g_ctx.jvm->GetEnv((void**)&env, JNI_VERSION_1_4) == JNI_OK)
         {
-            env->DeleteGlobalRef(g_main_activity_global);
+            env->DeleteGlobalRef(g_ctx.main_activity);
         }
-        g_main_activity_global = nullptr;
+        g_ctx.main_activity = nullptr;
     }
 }
 
@@ -337,7 +338,7 @@ JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_loadModel(JNIEnv* env, jobje
 
     // reload
     {
-        ncnn::MutexLockGuard g(lock);
+        ncnn::MutexLockGuard g(g_ctx.lock);
 
         {
             static int old_taskid = 0;
@@ -346,8 +347,8 @@ JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_loadModel(JNIEnv* env, jobje
             if (taskid != old_taskid || (modelid % 3) != old_modelid || cpugpu != old_cpugpu)
             {
                 // taskid or model or cpugpu changed
-                delete g_yolo11;
-                g_yolo11 = 0;
+                delete g_ctx.yolo;
+                g_ctx.yolo = 0;
             }
             old_taskid = taskid;
             old_modelid = modelid % 3;
@@ -364,22 +365,22 @@ JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_loadModel(JNIEnv* env, jobje
                 ncnn::create_gpu_instance();
             }
 
-            if (!g_yolo11)
+            if (!g_ctx.yolo)
             {
-                if (taskid == 0) g_yolo11 = new YOLO11_det;
-                if (taskid == 1) g_yolo11 = new YOLO11_seg;
-                if (taskid == 2) g_yolo11 = new YOLO11_pose;
-                if (taskid == 3) g_yolo11 = new YOLO11_cls;
-                if (taskid == 4) g_yolo11 = new YOLO11_obb;
+                if (taskid == 0) g_ctx.yolo = new YOLO11_det;
+                if (taskid == 1) g_ctx.yolo = new YOLO11_seg;
+                if (taskid == 2) g_ctx.yolo = new YOLO11_pose;
+                if (taskid == 3) g_ctx.yolo = new YOLO11_cls;
+                if (taskid == 4) g_ctx.yolo = new YOLO11_obb;
 
-                g_yolo11->load(mgr, parampath.c_str(), modelpath.c_str(), use_gpu || use_turnip);
+                g_ctx.yolo->load(mgr, parampath.c_str(), modelpath.c_str(), use_gpu || use_turnip);
             }
             int target_size = 320;
             if ((int)modelid >= 3)
                 target_size = 480;
             if ((int)modelid >= 6)
                 target_size = 640;
-            g_yolo11->set_det_target_size(target_size);
+            g_ctx.yolo->set_det_target_size(target_size);
         }
     }
 
@@ -394,7 +395,7 @@ JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_openCamera(JNIEnv* env, jobj
 
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "openCamera %d", facing);
 
-    g_camera->open((int)facing);
+    g_ctx.camera->open((int)facing);
 
     return JNI_TRUE;
 }
@@ -404,7 +405,7 @@ JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_closeCamera(JNIEnv* env, job
 {
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "closeCamera");
 
-    g_camera->close();
+    g_ctx.camera->close();
 
     return JNI_TRUE;
 }
@@ -416,7 +417,7 @@ JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_setOutputWindow(JNIEnv* env,
 
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "setOutputWindow %p", win);
 
-    g_camera->set_window(win);
+    g_ctx.camera->set_window(win);
 
     return JNI_TRUE;
 }
@@ -428,7 +429,7 @@ JNIEXPORT void JNICALL Java_com_barf_YoloBridge_setDisplayOrientation(JNIEnv* en
     if (d < 0) d += 360;
     if (d == 0 || d == 90 || d == 180 || d == 270)
     {
-        g_display_rotation.store(d);
+        g_ctx.display_rotation.store(d);
         __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "setDisplayOrientation %d", d);
     }
 }

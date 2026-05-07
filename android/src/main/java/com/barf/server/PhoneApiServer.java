@@ -6,6 +6,7 @@ import android.util.Log;
 import com.barf.SimpleWebSocketServer;
 import com.barf.VideoStreamServer;
 import com.barf.runtime.JsRuntime;
+import com.barf.runtime.WasmRuntime;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -35,6 +36,7 @@ public class PhoneApiServer extends NanoHTTPD {
     private SimpleWebSocketServer webSocketServer;
     private VideoStreamServer videoStreamServer;
     private JsRuntime jsRuntime;
+    private WasmRuntime wasmRuntime;
     private boolean isOnline = false;
 
     // Callback for robot/serial actions
@@ -60,6 +62,10 @@ public class PhoneApiServer extends NanoHTTPD {
 
     public void setJsRuntime(JsRuntime jsRuntime) {
         this.jsRuntime = jsRuntime;
+    }
+
+    public void setWasmRuntime(WasmRuntime wasmRuntime) {
+        this.wasmRuntime = wasmRuntime;
     }
 
     public VideoStreamServer getVideoStreamServer() {
@@ -109,13 +115,18 @@ public class PhoneApiServer extends NanoHTTPD {
     }
 
     /**
-     * Push detection JSON to JS runtime and broadcast to WebSocket clients.
+     * Push detection JSON to JS/WASM runtimes and broadcast to WebSocket clients.
      */
     public void pushDetections(String detectionsJson) {
         if (detectionsJson == null) detectionsJson = "[]";
 
         if (jsRuntime != null) {
             jsRuntime.pushDetections(detectionsJson);
+        }
+
+        // Forward to WASM runtime if loaded
+        if (wasmRuntime != null && wasmRuntime.isLoaded()) {
+            wasmRuntime.onFrame(detectionsJson);
         }
 
         if (webSocketServer != null) {
