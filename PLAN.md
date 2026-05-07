@@ -822,7 +822,7 @@ git commit -m "refactor: wrap native globals in context struct, add WAMR JNI bri
 
 ---
 
-## PHASE 4 — Desktop Companion App (Tauri)
+## ✅ PHASE 4 — Desktop Companion App (Tauri) (done)
 
 ### Step 4.1 — Scaffold Tauri project
 
