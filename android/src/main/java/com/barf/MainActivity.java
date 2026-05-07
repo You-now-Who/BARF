@@ -4,6 +4,7 @@ package com.barf;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
@@ -31,6 +32,7 @@ import com.barf.server.PhoneApiServer;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback, PhoneApiServer.ServerCallback {
     public static final int REQUEST_CAMERA = 100;
+    private static final int REQUEST_PAIR = 200;
     private static final String TAG = "MainActivity";
 
     private YoloBridge yolo = new YoloBridge();
@@ -65,6 +67,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         switchCam.setOnClickListener(v -> {
             cameraManager.switchCamera();
             broadcast("Camera switched to " + (cameraManager.getFacing() == 0 ? "back" : "front"));
+        });
+
+        Button pairButton = findViewById(R.id.buttonPair);
+        pairButton.setOnClickListener(v -> {
+            cameraManager.close();
+            Intent pairIntent = new Intent(this, com.barf.pairing.PairingActivity.class);
+            startActivityForResult(pairIntent, REQUEST_PAIR);
         });
 
         spinnerTask = findViewById(R.id.spinnerTask);
@@ -132,6 +141,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private void broadcast(String msg) {
         if (apiServer != null && apiServer.getWebSocketServer() != null)
             apiServer.getWebSocketServer().broadcast(msg);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_PAIR) {
+            if (resultCode == RESULT_OK && data != null) {
+                String desktopIp = data.getStringExtra("desktop_ip");
+                String phoneIp = data.getStringExtra("phone_ip");
+                Log.i(TAG, "Paired with desktop at " + desktopIp + " (phone IP: " + phoneIp + ")");
+                Toast.makeText(this, "Paired with " + desktopIp, Toast.LENGTH_SHORT).show();
+            }
+            // Always re-open camera after pairing attempt
+            cameraManager.open();
+        }
     }
 
     private void reload() {

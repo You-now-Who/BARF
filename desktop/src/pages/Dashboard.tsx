@@ -1,19 +1,26 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import QrPairingCard from "../components/QrPairingCard";
 
 export default function Dashboard() {
   const [status, setStatus] = useState<any>({ isMoving: false, lastCommand: "none", cameraFacing: 0 });
-  const [phoneIp, setPhoneIp] = useState("192.168.1.100");
+  const [phoneIp, setPhoneIp] = useState("");
   const [speed, setSpeed] = useState(0.5);
   const [phoneStatus, setPhoneStatus] = useState<string>("Disconnected");
   const [serialLog] = useState<string[]>([]);
 
+  const handlePair = useCallback((ip: string) => {
+    setPhoneIp(ip);
+  }, []);
+
   useEffect(() => {
+    if (!phoneIp) return;
     const iv = setInterval(fetchStatus, 2000);
     fetchStatus();
     return () => clearInterval(iv);
   }, [phoneIp]);
 
   async function fetchStatus() {
+    if (!phoneIp) return;
     try {
       const res = await fetch(`http://${phoneIp}:8080/api/status`);
       if (res.ok) {
@@ -29,6 +36,7 @@ export default function Dashboard() {
   }
 
   async function post(path: string, body?: any) {
+    if (!phoneIp) return;
     try {
       await fetch(`http://${phoneIp}:8080${path}`, {
         method: "POST",
@@ -46,22 +54,8 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       <section className="space-y-4 columns-1 md:columns-2 xl:columns-3">
-        {/* Phone Connection */}
-        <article className="mb-4 break-inside-avoid rounded-xl border border-[#22242b] bg-[linear-gradient(160deg,#131419_0%,#0f1014_100%)] p-4 text-zinc-100 shadow-[0_16px_40px_rgba(0,0,0,0.28)]">
-          <div className="mb-3 text-sm font-semibold tracking-wide">Phone Connection</div>
-          <div className="flex gap-2 items-center mb-2">
-            <input
-              type="text"
-              value={phoneIp}
-              onChange={(e) => setPhoneIp(e.target.value)}
-              className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm flex-1"
-              placeholder="Phone IP"
-            />
-            <span className={`text-xs font-semibold ${phoneStatus === "Connected" ? "text-green-400" : "text-red-400"}`}>
-              {phoneStatus}
-            </span>
-          </div>
-        </article>
+        {/* Phone Connection — QR Pairing Card */}
+        <QrPairingCard phoneIp={phoneIp} phoneStatus={phoneStatus} onPair={handlePair} />
 
         {/* Camera Feed */}
         <article className="break-inside-avoid rounded-xl border border-[#22242b] bg-[linear-gradient(160deg,#131419_0%,#0f1014_100%)] p-4 text-zinc-100 shadow-[0_16px_40px_rgba(0,0,0,0.28)]">

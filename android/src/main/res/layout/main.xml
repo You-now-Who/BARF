@@ -21,6 +21,13 @@
         android:background="#f0f0f0">
 
         <Button
+            android:id="@+id/buttonPair"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Pair with Desktop"
+            android:layout_marginBottom="8dp" />
+
+        <Button
             android:id="@+id/buttonSwitchCamera"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

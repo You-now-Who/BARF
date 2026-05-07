@@ -21,3 +21,6 @@ reqwest = { version = "0.12", features = ["json", "multipart"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
+rand = "0.8"
+log = "0.4"
+local-ip-address = "0.6"

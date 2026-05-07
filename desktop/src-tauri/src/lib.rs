@@ -1,4 +1,5 @@
 pub mod compile;
+pub mod pairing_server;
 pub mod phone_bridge;
 
 use std::sync::Mutex;
@@ -12,21 +13,76 @@ pub struct AppState {
 #[tauri::command]
 async fn get_status(state: State<'_, AppState>) -> Result<String, String> {
     let ip = state.phone_ip.lock().map_err(|e| e.to_string())?;
-    Ok(format!("Connected to phone at {}", ip))
+    if ip.is_empty() {
+        Ok("Not paired".to_string())
+    } else {
+        Ok(format!("Connected to phone at {}", ip))
+    }
+}
+
+#[tauri::command]
+async fn start_pairing(
+    pairing: State<'_, pairing_server::PairingState>,
+) -> Result<String, String> {
+    // Generate 12-char hex pair key
+    let pair_key: String = (0..12)
+        .map(|_| format!("{:x}", rand::random::<u8>() % 16))
+        .collect();
+
+    pairing.set_expected_key(pair_key.clone()).await;
+
+    // Detect LAN IP
+    let desktop_ip = local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+
+    let result = serde_json::json!({
+        "desktop_ip": desktop_ip,
+        "pair_key": pair_key,
+        "port": 9876
+    });
+
+    Ok(result.to_string())
+}
+
+#[tauri::command]
+async fn get_paired_phone_ip(
+    pairing: State<'_, pairing_server::PairingState>,
+) -> Result<String, String> {
+    match pairing.get_paired_ip().await {
+        Some(ip) => Ok(ip),
+        None => Ok("none".to_string()),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let pairing_state = pairing_server::PairingState::new();
+    let pairing_state_clone = pairing_state.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState {
-            phone_ip: Mutex::new("192.168.1.100".to_string()),
+            phone_ip: Mutex::new(String::new()),
         })
+        .manage(pairing_state)
         .invoke_handler(tauri::generate_handler![
             get_status,
             compile::compile_wasm,
             phone_bridge::deploy_wasm,
+            start_pairing,
+            get_paired_phone_ip,
         ])
+        .setup(move |_app| {
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) =
+                    pairing_server::start_pairing_server(9876, pairing_state_clone).await
+                {
+                    eprintln!("[pairing] Failed to start server: {}", e);
+                }
+            });
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
