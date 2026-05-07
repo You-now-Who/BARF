@@ -17,7 +17,7 @@
 
 ---
 
-## PHASE 0 — Repo Cleanup & Git Hygiene
+## ✅ PHASE 0 — Repo Cleanup & Git Hygiene (done)
 
 ### Step 0.1 — Clean up .gitignore
 
