@@ -1,13 +1,14 @@
 {
-  "name": "react",
+  "name": "barf-desktop",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@base-ui/react": "^1.2.0",
@@ -15,6 +16,8 @@
     "@monaco-editor/react": "^4.7.0",
     "@tabler/icons-react": "^3.37.1",
     "@tailwindcss/vite": "^4.1.17",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/cli": "^2.11.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "radix-ui": "^1.4.3",

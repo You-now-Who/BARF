@@ -22,6 +22,7 @@ venv/
 # Build output
 android/src/main/assets/web/
 desktop/dist/
+desktop/src-tauri/target/
 
 # IDE
 .vscode/
