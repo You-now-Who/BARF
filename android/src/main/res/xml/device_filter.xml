@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Silicon Labs CP2102 (common ESP32 USB-serial) -->
+    <usb-device vendor-id="4292" />
+    <!-- WCH CH340/CH341 -->
+    <usb-device vendor-id="6790" />
+    <!-- FTDI FT232 -->
+    <usb-device vendor-id="1027" />
+    <!-- Espressif native USB -->
+    <usb-device vendor-id="12346" />
+</resources>
