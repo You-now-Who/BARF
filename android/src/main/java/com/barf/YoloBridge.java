@@ -12,12 +12,12 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-package com.tencent.yolo11ncnn;
+package com.barf;
 
 import android.content.res.AssetManager;
 import android.view.Surface;
 
-public class YOLO11Ncnn
+public class YoloBridge
 {
     public native boolean loadModel(AssetManager mgr, int taskid, int modelid, int cpugpu);
     public native boolean openCamera(int facing);

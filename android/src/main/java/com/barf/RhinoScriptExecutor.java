@@ -4,7 +4,7 @@
  * Executes JavaScript scripts using Mozilla Rhino engine with a robot control API.
  * Provides functions: move(), rotate(), stop(), wait(), log(), print()
  */
-package com.tencent.yolo11ncnn;
+package com.barf;
 
 import android.util.Log;
 import org.mozilla.javascript.*;

@@ -3,7 +3,7 @@
  * 
  * Minimal HTTP server for serving static HTML and basic API endpoints.
  */
-package com.tencent.yolo11ncnn;
+package com.barf;
 
 import android.content.Context;
 import android.content.SharedPreferences;

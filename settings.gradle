@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "yolo11ncnn"
-include ':app'
+rootProject.name = "barf"
+include ':android'

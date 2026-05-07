@@ -142,7 +142,7 @@ git commit -m "chore: repo cleanup — remove cruft, fix gitignore, organize mod
 
 ## PHASE 1 — Directory Restructure (Monorepo)
 
-### Step 1.1 — Move and rename directories
+### ✅ Step 1.1 — Move and rename directories (app→android, react→desktop)
 
 **Target structure:**
 ```
@@ -210,7 +210,7 @@ git mv finetune.ipynb tools/
 
 ---
 
-### Step 1.2 — Rename Java package
+### ✅ Step 1.2 — Rename Java package
 
 **What:** Rename `com.tencent.yolo11ncnn` → `com.barf` across all Java files, AndroidManifest.xml, build.gradle, and native JNI function signatures.
 
@@ -264,7 +264,7 @@ rmdir android/src/main/java/com/tencent/
 
 ---
 
-### Step 1.3 — Fix Gradle paths
+### ✅ Step 1.3 — Fix Gradle paths
 
 **What:** Update all Gradle references from `app/` to `android/`.
 
@@ -279,7 +279,7 @@ rmdir android/src/main/java/com/tencent/
 
 ---
 
-### Step 1.4 — Rename YOLO11Ncnn.java → YoloBridge.java
+### ✅ Step 1.4 — Rename YOLO11Ncnn.java → YoloBridge.java
 
 **What:** Rename the JNI bridge class to reflect its new role.
 

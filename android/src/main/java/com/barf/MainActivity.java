@@ -12,7 +12,7 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-package com.tencent.yolo11ncnn;
+package com.barf;
 
 import android.Manifest;
 import android.app.Activity;
@@ -89,7 +89,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
     public static final int REQUEST_CAMERA = 100;
     public static final int REQUEST_NOTIFICATION = 101;
 
-    private YOLO11Ncnn yolo11ncnn = new YOLO11Ncnn();
+    private YoloBridge yolo = new YoloBridge();
     private boolean serverInitialized = false;
     private int facing = 1;
     
@@ -160,9 +160,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
 
                 int new_facing = 1 - facing;
 
-                yolo11ncnn.closeCamera();
+                yolo.closeCamera();
 
-                yolo11ncnn.openCamera(new_facing);
+                yolo.openCamera(new_facing);
 
                 facing = new_facing;
                 
@@ -247,7 +247,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
             sSimpleServerStatic = simpleServer;
             // register this Activity with native YOLO code so native can callback safely
             try {
-                yolo11ncnn.registerActivity(this);
+                yolo.registerActivity(this);
             } catch (Exception e) {
                 Log.w("MainActivity", "Failed to register activity with native layer: " + e.getMessage());
             }
@@ -475,8 +475,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
     public void onCameraSwitch() {
         Log.i("MainActivity", "Camera switch requested");
         int newFacing = 1 - facing;
-        yolo11ncnn.closeCamera();
-        yolo11ncnn.openCamera(newFacing);
+        yolo.closeCamera();
+        yolo.openCamera(newFacing);
         facing = newFacing;
         lastCommand = "camera_switch";
         
@@ -495,7 +495,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
 
     private void reload()
     {
-        boolean ret_init = yolo11ncnn.loadModel(getAssets(), current_task, current_model, current_cpugpu);
+        boolean ret_init = yolo.loadModel(getAssets(), current_task, current_model, current_cpugpu);
         if (!ret_init)
         {
             Log.e("MainActivity", "yolo11ncnn loadModel failed");
@@ -573,7 +573,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height)
     {
         // Ensure native camera draws to the surface
-        yolo11ncnn.setOutputWindow(holder.getSurface());
+        yolo.setOutputWindow(holder.getSurface());
 
         // Inform native code about desired frame rotation and adjust view.
         int nativeRotation = 0;
@@ -591,7 +591,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
                 nativeRotation = 0;
             }
             // tell native renderer to rotate frames before processing/drawing
-            yolo11ncnn.setDisplayOrientation(nativeRotation);
+            yolo.setDisplayOrientation(nativeRotation);
         } catch (Exception e) {
             Log.w("MainActivity", "Failed to adjust SurfaceView rotation: " + e.getMessage());
         }
@@ -617,7 +617,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
             ActivityCompat.requestPermissions(this, new String[] {Manifest.permission.CAMERA}, REQUEST_CAMERA);
         }
 
-        yolo11ncnn.openCamera(facing);
+        yolo.openCamera(facing);
     }
 
     @Override
@@ -625,7 +625,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Si
     {
         super.onPause();
 
-        yolo11ncnn.closeCamera();
+        yolo.closeCamera();
     }
     
     @Override

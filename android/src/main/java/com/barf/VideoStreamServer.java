@@ -4,7 +4,7 @@
  * Simple MJPEG video stream server for streaming camera frames.
  * Provides a simple queue-based frame delivery system.
  */
-package com.tencent.yolo11ncnn;
+package com.barf;
 
 import android.graphics.Bitmap;
 import android.util.Log;

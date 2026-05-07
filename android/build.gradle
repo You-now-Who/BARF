@@ -3,13 +3,13 @@ plugins {
 }
 
 android {
-    namespace 'com.tencent.yolo11ncnn'
+    namespace 'com.barf'
     compileSdk 33
     ndkVersion "29.0.14206865"
 
     defaultConfig {
-        applicationId "com.tencent.yolo11ncnn"
-        archivesBaseName = "$applicationId"
+        applicationId "com.barf"
+        archivesBaseName = "barf"
 
         minSdkVersion 24
         targetSdkVersion 35

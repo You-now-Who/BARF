@@ -3,7 +3,7 @@
  * 
  * Minimal WebSocket server using Java-WebSocket for basic message testing.
  */
-package com.tencent.yolo11ncnn;
+package com.barf;
 
 import android.util.Log;
 import org.java_websocket.WebSocket;

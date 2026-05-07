@@ -252,7 +252,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
 }
 
 // Java binding: register the Activity instance for callbacks
-JNIEXPORT void JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_registerActivity(JNIEnv* env, jobject thiz, jobject activity)
+JNIEXPORT void JNICALL Java_com_barf_YoloBridge_registerActivity(JNIEnv* env, jobject thiz, jobject activity)
 {
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "registerActivity called");
     if (g_main_activity_global != nullptr)
@@ -297,7 +297,7 @@ JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved)
 }
 
 // public native boolean loadModel(AssetManager mgr, int taskid, int modelid, int cpugpu);
-JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_loadModel(JNIEnv* env, jobject thiz, jobject assetManager, jint taskid, jint modelid, jint cpugpu)
+JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_loadModel(JNIEnv* env, jobject thiz, jobject assetManager, jint taskid, jint modelid, jint cpugpu)
 {
     if (taskid < 0 || taskid > 4 || modelid < 0 || modelid > 8 || cpugpu < 0 || cpugpu > 2)
     {
@@ -387,7 +387,7 @@ JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_loadModel(JNIE
 }
 
 // public native boolean openCamera(int facing);
-JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_openCamera(JNIEnv* env, jobject thiz, jint facing)
+JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_openCamera(JNIEnv* env, jobject thiz, jint facing)
 {
     if (facing < 0 || facing > 1)
         return JNI_FALSE;
@@ -400,7 +400,7 @@ JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_openCamera(JNI
 }
 
 // public native boolean closeCamera();
-JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_closeCamera(JNIEnv* env, jobject thiz)
+JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_closeCamera(JNIEnv* env, jobject thiz)
 {
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "closeCamera");
 
@@ -410,7 +410,7 @@ JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_closeCamera(JN
 }
 
 // public native boolean setOutputWindow(Surface surface);
-JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_setOutputWindow(JNIEnv* env, jobject thiz, jobject surface)
+JNIEXPORT jboolean JNICALL Java_com_barf_YoloBridge_setOutputWindow(JNIEnv* env, jobject thiz, jobject surface)
 {
     ANativeWindow* win = ANativeWindow_fromSurface(env, surface);
 
@@ -422,7 +422,7 @@ JNIEXPORT jboolean JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_setOutputWindo
 }
 
 // public native void setDisplayOrientation(int degrees);
-JNIEXPORT void JNICALL Java_com_tencent_yolo11ncnn_YOLO11Ncnn_setDisplayOrientation(JNIEnv* env, jobject thiz, jint degrees)
+JNIEXPORT void JNICALL Java_com_barf_YoloBridge_setDisplayOrientation(JNIEnv* env, jobject thiz, jint degrees)
 {
     int d = degrees % 360;
     if (d < 0) d += 360;
