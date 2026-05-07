@@ -306,7 +306,7 @@ Update native JNI function names in `yolo11ncnn.cpp`:
 
 ---
 
-### Step 1.5 — Commit the restructure
+### ✅ Step 1.5 — Commit the restructure
 
 ```bash
 git add -A
