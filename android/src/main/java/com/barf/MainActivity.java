@@ -44,6 +44,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private VideoStreamManager videoStreamManager;
     private SurfaceView cameraView;
     private static PhoneApiServer sApiServerStatic = null;
+    private boolean cameraClosedForPairing = false;
 
     private Spinner spinnerTask, spinnerModel, spinnerCPUGPU;
     private int current_task = 0, current_model = 0, current_cpugpu = 0;
@@ -71,7 +72,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
 
         Button pairButton = findViewById(R.id.buttonPair);
         pairButton.setOnClickListener(v -> {
-            cameraManager.close();
+            try {
+                cameraManager.close();
+                cameraClosedForPairing = true;
+            } catch (Exception e) {
+                Log.w(TAG, "Error closing camera for pairing: " + e.getMessage());
+            }
             Intent pairIntent = new Intent(this, com.barf.pairing.PairingActivity.class);
             startActivityForResult(pairIntent, REQUEST_PAIR);
         });
@@ -154,6 +160,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
                 Toast.makeText(this, "Paired with " + desktopIp, Toast.LENGTH_SHORT).show();
             }
             // Always re-open camera after pairing attempt
+            cameraClosedForPairing = false;
             cameraManager.open();
         }
     }
@@ -166,8 +173,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     // ========== ServerCallback ==========
     @Override public void onMove(String d, float s) { robotController.move(d, s); }
     @Override public void onRotate(String d, float s) { robotController.rotate(d, s); }
-    @Override public void onStop() { robotController.stop(); }
+    @Override public void onSwitchCamera() {
+        try { cameraManager.switchCamera(); } catch (Exception e) { Log.w(TAG, "switchCamera error: " + e.getMessage()); }
+    }
     @Override public int getCameraFacing() { return cameraManager.getFacing(); }
+
+    // onStop() serves both Activity lifecycle and ServerCallback interface
+    @Override
+    public void onStop() {
+        super.onStop();
+        robotController.stop();
+        cameraClosedForPairing = false;
+    }
 
     // ========== SurfaceHolder.Callback ==========
     @Override public void surfaceCreated(SurfaceHolder h) {}
@@ -196,11 +213,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         super.onResume();
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_DENIED)
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA);
-        cameraManager.open();
+        // Don't open camera if we're returning from pairing (onActivityResult handles it)
+        if (!cameraClosedForPairing) {
+            cameraManager.open();
+        }
     }
 
     @Override
-    public void onPause() { super.onPause(); cameraManager.close(); }
+    public void onPause() {
+        super.onPause();
+        if (!cameraClosedForPairing) {
+            try { cameraManager.close(); } catch (Exception e) { Log.w(TAG, "close error: " + e.getMessage()); }
+        }
+    }
 
     @Override
     public void onDestroy() {

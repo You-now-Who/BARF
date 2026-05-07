@@ -18,7 +18,12 @@ import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
+import androidx.lifecycle.Lifecycle;
+import androidx.lifecycle.LifecycleEventObserver;
+import androidx.lifecycle.LifecycleOwner;
+import androidx.lifecycle.LifecycleRegistry;
 
+import com.barf.R;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.barcode.BarcodeScanner;
 import com.google.mlkit.vision.barcode.BarcodeScanning;
@@ -39,7 +44,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-public class PairingActivity extends Activity implements ImageAnalysis.Analyzer {
+public class PairingActivity extends Activity implements ImageAnalysis.Analyzer, LifecycleOwner {
     private static final String TAG = "PairingActivity";
     private static final String BARF_PREFIX = "barf://pair";
     private static final long SCAN_TIMEOUT_MS = 30000;
@@ -50,6 +55,7 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer 
     private ExecutorService analysisExecutor;
     private Handler mainHandler;
     private boolean paired = false;
+    private LifecycleRegistry lifecycleRegistry;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -60,6 +66,9 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer 
         previewView = findViewById(R.id.pairingPreviewView);
         statusText = findViewById(R.id.pairingStatusText);
 
+        lifecycleRegistry = new LifecycleRegistry(this);
+        lifecycleRegistry.setCurrentState(Lifecycle.State.CREATED);
+
         barcodeScanner = BarcodeScanning.getClient();
         analysisExecutor = Executors.newSingleThreadExecutor();
         mainHandler = new Handler(Looper.getMainLooper());
@@ -68,6 +77,12 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer 
 
         // Timeout: if no QR scanned in 30s, cancel
         mainHandler.postDelayed(this::onTimeout, SCAN_TIMEOUT_MS);
+    }
+
+    @Override
+    @NonNull
+    public Lifecycle getLifecycle() {
+        return lifecycleRegistry;
     }
 
     private void startCamera() {
@@ -268,7 +283,20 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer 
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        lifecycleRegistry.setCurrentState(Lifecycle.State.RESUMED);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        lifecycleRegistry.setCurrentState(Lifecycle.State.STARTED);
+    }
+
+    @Override
     protected void onDestroy() {
+        lifecycleRegistry.setCurrentState(Lifecycle.State.DESTROYED);
         super.onDestroy();
         if (barcodeScanner != null) barcodeScanner.close();
         if (analysisExecutor != null) {

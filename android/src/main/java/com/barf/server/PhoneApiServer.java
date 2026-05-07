@@ -46,6 +46,7 @@ public class PhoneApiServer extends NanoHTTPD {
         void onMove(String direction, float speed);
         void onRotate(String direction, float speed);
         void onStop();
+        void onSwitchCamera();
         int getCameraFacing();
     }
 
@@ -149,6 +150,16 @@ public class PhoneApiServer extends NanoHTTPD {
 
         Log.d(TAG, method + " " + uri);
 
+        // Handle CORS preflight
+        if (method == Method.OPTIONS) {
+            Response resp = newFixedLengthResponse(Response.Status.OK, "text/plain", "");
+            resp.addHeader("Access-Control-Allow-Origin", "*");
+            resp.addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            resp.addHeader("Access-Control-Allow-Headers", "Content-Type");
+            resp.addHeader("Access-Control-Max-Age", "86400");
+            return resp;
+        }
+
         try {
             if (uri.startsWith("/api/")) {
                 return handleApi(session, uri, method);
@@ -172,6 +183,18 @@ public class PhoneApiServer extends NanoHTTPD {
                 break;
             case "/api/serial":
                 if (method == Method.POST) return handleSerial(session);
+                break;
+            case "/api/robot/move":
+                if (method == Method.POST) return handleRobotMove(session);
+                break;
+            case "/api/robot/rotate":
+                if (method == Method.POST) return handleRobotRotate(session);
+                break;
+            case "/api/robot/stop":
+                if (method == Method.POST) return handleRobotStop();
+                break;
+            case "/api/robot/camera/switch":
+                if (method == Method.POST) return handleCameraSwitch();
                 break;
         }
         return createJsonResponse(Response.Status.NOT_FOUND, errorJson("API endpoint not found: " + uri));
@@ -246,6 +269,57 @@ public class PhoneApiServer extends NanoHTTPD {
         } catch (Exception e) {
             return createJsonResponse(Response.Status.BAD_REQUEST, errorJson(e.getMessage()));
         }
+    }
+
+    private Response handleRobotMove(IHTTPSession session) {
+        if (callback == null) {
+            return createJsonResponse(Response.Status.INTERNAL_ERROR, errorJson("Robot controller not available"));
+        }
+        try {
+            String body = getBody(session);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            String direction = json.has("direction") ? json.get("direction").getAsString() : "";
+            float speed = json.has("speed") ? json.get("speed").getAsFloat() : 0.5f;
+            callback.onMove(direction, speed);
+            JsonObject resp = new JsonObject();
+            resp.addProperty("success", true);
+            return createJsonResponse(Response.Status.OK, resp.toString());
+        } catch (Exception e) {
+            return createJsonResponse(Response.Status.BAD_REQUEST, errorJson(e.getMessage()));
+        }
+    }
+
+    private Response handleRobotRotate(IHTTPSession session) {
+        if (callback == null) {
+            return createJsonResponse(Response.Status.INTERNAL_ERROR, errorJson("Robot controller not available"));
+        }
+        try {
+            String body = getBody(session);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            String direction = json.has("direction") ? json.get("direction").getAsString() : "";
+            float speed = json.has("speed") ? json.get("speed").getAsFloat() : 0.5f;
+            callback.onRotate(direction, speed);
+            JsonObject resp = new JsonObject();
+            resp.addProperty("success", true);
+            return createJsonResponse(Response.Status.OK, resp.toString());
+        } catch (Exception e) {
+            return createJsonResponse(Response.Status.BAD_REQUEST, errorJson(e.getMessage()));
+        }
+    }
+
+    private Response handleRobotStop() {
+        if (callback != null) callback.onStop();
+        JsonObject resp = new JsonObject();
+        resp.addProperty("success", true);
+        return createJsonResponse(Response.Status.OK, resp.toString());
+    }
+
+    private Response handleCameraSwitch() {
+        if (callback != null) callback.onSwitchCamera();
+        JsonObject resp = new JsonObject();
+        resp.addProperty("success", true);
+        resp.addProperty("cameraFacing", callback != null ? callback.getCameraFacing() : -1);
+        return createJsonResponse(Response.Status.OK, resp.toString());
     }
 
     private String getBody(IHTTPSession session) throws IOException {
