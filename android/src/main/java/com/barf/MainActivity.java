@@ -25,6 +25,8 @@ import androidx.core.content.ContextCompat;
 
 import com.barf.camera.CameraManager;
 import com.barf.camera.VideoStreamManager;
+import com.barf.pairing.PairingManager;
+import com.barf.pairing.WireGuardManager;
 import com.barf.robot.RobotController;
 import com.barf.runtime.JsRuntime;
 import com.barf.runtime.WasmRuntime;
@@ -45,6 +47,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private SurfaceView cameraView;
     private static PhoneApiServer sApiServerStatic = null;
     private boolean cameraClosedForPairing = false;
+    
+    // Pairing info
+    private String desktopIp;
+    private String phoneIp;
+    private PairingManager pairingManager;
+    private WireGuardManager wireGuardManager;
 
     private Spinner spinnerTask, spinnerModel, spinnerCPUGPU;
     private int current_task = 0, current_model = 0, current_cpugpu = 0;
@@ -56,6 +64,45 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         setContentView(R.layout.main);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        // Initialize pairing managers
+        pairingManager = new PairingManager(this);
+        wireGuardManager = new WireGuardManager(this);
+
+        // Get pairing info from intent
+        Intent intent = getIntent();
+        if (intent != null) {
+            desktopIp = intent.getStringExtra("desktop_ip");
+            phoneIp = intent.getStringExtra("phone_ip");
+            String wgServerIp = intent.getStringExtra("wg_server_ip");
+            String wgPublicKey = intent.getStringExtra("wg_public_key");
+            String wgClientIp = intent.getStringExtra("wg_client_ip");
+            int wgPort = intent.getIntExtra("wg_port", 51820);
+            
+            // Re-establish WireGuard connection if needed
+            if (wgServerIp != null && wgPublicKey != null && wgClientIp != null && !wireGuardManager.isConnected()) {
+                try {
+                    wireGuardManager.connect(wgServerIp, wgPublicKey, wgClientIp, wgPort);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to reconnect WireGuard: " + e.getMessage());
+                }
+            }
+        } else if (pairingManager.isPaired()) {
+            // Use saved pairing info
+            desktopIp = pairingManager.getDesktopIp();
+            String wgServerIp = pairingManager.getWgServerIp();
+            String wgPublicKey = pairingManager.getWgPublicKey();
+            String wgClientIp = pairingManager.getWgClientIp();
+            int wgPort = pairingManager.getWgPort();
+            
+            if (wgServerIp != null && wgPublicKey != null && wgClientIp != null && !wireGuardManager.isConnected()) {
+                try {
+                    wireGuardManager.connect(wgServerIp, wgPublicKey, wgClientIp, wgPort);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to reconnect WireGuard: " + e.getMessage());
+                }
+            }
+        }
 
         cameraView = findViewById(R.id.cameraview);
         cameraView.getHolder().setFormat(PixelFormat.RGBA_8888);

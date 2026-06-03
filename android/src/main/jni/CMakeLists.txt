@@ -62,3 +62,11 @@ add_library(yolo11ncnn SHARED
 target_include_directories(yolo11ncnn PRIVATE ${apriltag_SOURCE_DIR})
 
 target_link_libraries(yolo11ncnn ncnn ${OpenCV_LIBS} camera2ndk mediandk)
+
+# 16KB ELF alignment for Android 15+ compatibility
+if(ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "x86_64")
+    target_link_options(yolo11ncnn PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+    )
+endif()

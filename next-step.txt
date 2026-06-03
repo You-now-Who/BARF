@@ -1,0 +1,68 @@
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Ready to code?                                                                                                                                                                               
+                                                                                                                                                                                               Here is Claude's plan:                                                                                                                                                                       
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ Plan: Fix FPS and add YOLO/AprilTag toggle                                                                                                                                                   
+
+ Context
+
+ The app runs YOLO (~7 FPS) vs the base nihui ncnn-android-yolo11 (20-40 FPS). The per-frame pipeline in on_image_render() (yolo11ncnn.cpp) runs everything synchronously on the camera       
+ thread:
+ 1. YOLO GPU inference — fine (same as base)
+ 2. AprilTag detection on full 640x480 CPU frame — heavy (~30-50ms/frame)
+ 3. JNI AttachCurrentThread + JSON serialization — overhead every frame with detections
+ 4. Full frame cv::transpose + flip for rotation — memory copy
+
+ Goal: Start with YOLO + AprilTag disabled so the user sees base FPS, then enable via dashboard buttons.
+
+ Changes
+
+ 1. Native (yolo11ncnn.cpp)
+
+ - Add std::atomic<bool> yolo_enabled{false} and std::atomic<bool> apriltag_enabled{false} to AppContext
+ - Gate YOLO detection: if (g_ctx.yolo_enabled.load()) — else draw_unsupported
+ - Gate AprilTag detection: if (g_ctx.apriltag_enabled.load()) — skip entirely otherwise
+ - Add JNI methods: setYoloEnabled, setAprilTagEnabled, isYoloEnabled, isAprilTagEnabled
+
+ 2. Java bridge (YoloBridge.java)
+
+ - Add native static void setYoloEnabled(boolean), setAprilTagEnabled(boolean), isYoloEnabled(), isAprilTagEnabled()
+ - Public static wrappers so PhoneApiServer can call them
+
+ 3. Phone API (PhoneApiServer.java)
+
+ - POST /api/detection/yolo  {"enabled": true/false}
+ - POST /api/detection/apriltag  {"enabled": true/false}
+ - GET  /api/status — include yoloEnabled and apriltagEnabled fields
+
+ 4. Desktop Dashboard (Dashboard.tsx)
+
+ - Add two toggle buttons in the Manual Controls card: "YOLO Detection" and "AprilTag Detection"
+ - POST to the phone API to toggle on/off
+ - Show active/inactive state visually
+
+ Files modified
+
+ - android/src/main/jni/yolo11ncnn.cpp — AppContext flags + JNI methods
+ - android/src/main/java/com/barf/YoloBridge.java — JNI declarations
+ - android/src/main/java/com/barf/server/PhoneApiServer.java — HTTP endpoints
+ - desktop/src/pages/Dashboard.tsx — toggle buttons
+
+ Verification
+
+ 1. Build + install the app, start desktop, pair via QR
+ 2. Open desktop dashboard — buttons show both detections as OFF
+ 3. Measure FPS on phone (~20-40 expected with both off)
+ 4. Click "YOLO Detection" button — YOLO activates, FPS drops
+ 5. Click "AprilTag Detection" — AprilTag activates, FPS drops further
+ 6. Toggle both back off — FPS recovers
+ 7. Check GET /api/status reflects current toggle state
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+ Claude has written up a plan and is ready to execute. Would you like to proceed?
+
+ ❯ 1. Yes, and bypass permissions
+   2. Yes, manually approve edits
+   3. No, refine with Ultraplan on Claude Code on the web
+   4. Tell Claude what to change
+      shift+tab to approve with this feedback
+
+ ctrl-g to edit in Notepad · ~\.claude\plans\resilient-launching-fog.md

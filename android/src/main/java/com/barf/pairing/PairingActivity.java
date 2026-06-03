@@ -23,6 +23,7 @@ import androidx.lifecycle.LifecycleEventObserver;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
 
+import com.barf.MainActivity;
 import com.barf.R;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.barcode.BarcodeScanner;
@@ -38,7 +39,6 @@ import java.net.NetworkInterface;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
-import java.util.Enumeration;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -56,6 +56,8 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
     private Handler mainHandler;
     private boolean paired = false;
     private LifecycleRegistry lifecycleRegistry;
+    private PairingManager pairingManager;
+    private WireGuardManager wireGuardManager;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -72,11 +74,20 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
         barcodeScanner = BarcodeScanning.getClient();
         analysisExecutor = Executors.newSingleThreadExecutor();
         mainHandler = new Handler(Looper.getMainLooper());
+        
+        pairingManager = new PairingManager(this);
+        wireGuardManager = new WireGuardManager(this);
 
-        startCamera();
-
-        // Timeout: if no QR scanned in 30s, cancel
-        mainHandler.postDelayed(this::onTimeout, SCAN_TIMEOUT_MS);
+        // Check if already paired
+        if (pairingManager.isPaired()) {
+            String desktopIp = pairingManager.getDesktopIp();
+            statusText.setText("Already paired with " + desktopIp + ". Connecting...");
+            connectToExistingPairing(desktopIp);
+        } else {
+            startCamera();
+            // Timeout: if no QR scanned in 30s, cancel
+            mainHandler.postDelayed(this::onTimeout, SCAN_TIMEOUT_MS);
+        }
     }
 
     @Override
@@ -149,10 +160,14 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
 
         runOnUiThread(() -> statusText.setText("QR detected! Connecting..."));
 
-        // Parse URI: barf://pair?ip=X.X.X.X&key=XXXX&port=9876
+        // Parse URI: barf://pair?ip=X.X.X.X&key=XXXX&port=9876&wg_ip=WG_IP&wg_key=WG_KEY&wg_client=CLIENT_IP&wg_port=51820
         String desktopIp = null;
         String pairKey = null;
         int port = 9876;
+        String wgServerIp = null;
+        String wgPublicKey = null;
+        String wgClientIp = null;
+        int wgPort = 51820;
 
         try {
             String query = uri.substring(uri.indexOf('?') + 1);
@@ -164,6 +179,10 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
                     case "ip": desktopIp = kv[1]; break;
                     case "key": pairKey = kv[1]; break;
                     case "port": port = Integer.parseInt(kv[1]); break;
+                    case "wg_ip": wgServerIp = kv[1]; break;
+                    case "wg_key": wgPublicKey = kv[1]; break;
+                    case "wg_client": wgClientIp = kv[1]; break;
+                    case "wg_port": wgPort = Integer.parseInt(kv[1]); break;
                 }
             }
         } catch (Exception e) {
@@ -186,6 +205,10 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
         final String finalDesktopIp = desktopIp;
         final String finalPairKey = pairKey;
         final int finalPort = port;
+        final String finalWgServerIp = wgServerIp;
+        final String finalWgPublicKey = wgPublicKey;
+        final String finalWgClientIp = wgClientIp;
+        final int finalWgPort = wgPort;
 
         // Do the pairing POST on the analysis executor
         analysisExecutor.execute(() -> {
@@ -198,17 +221,41 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
                 return;
             }
 
+            // Establish WireGuard connection first if parameters provided
+            if (finalWgServerIp != null && finalWgPublicKey != null && finalWgClientIp != null) {
+                runOnUiThread(() -> statusText.setText("Establishing WireGuard connection..."));
+                try {
+                    wireGuardManager.connect(finalWgServerIp, finalWgPublicKey, finalWgClientIp, finalWgPort);
+                    Thread.sleep(1000); // Wait for connection to establish
+                } catch (Exception e) {
+                    Log.e(TAG, "WireGuard connection failed: " + e.getMessage());
+                    runOnUiThread(() -> {
+                        statusText.setText("WireGuard connection failed: " + e.getMessage());
+                        paired = false;
+                    });
+                    return;
+                }
+            }
+
             boolean success = sendPairingRequest(finalDesktopIp, finalPort, finalPairKey, phoneIp);
             if (success) {
                 Log.i(TAG, "Paired with desktop at " + finalDesktopIp);
+                
+                // Save pairing information
+                pairingManager.savePairing(finalDesktopIp, finalWgServerIp, finalWgPublicKey, finalWgClientIp, finalWgPort);
+                
                 runOnUiThread(() -> {
                     statusText.setText("Paired with " + finalDesktopIp);
-                    Intent result = new Intent();
-                    result.putExtra("desktop_ip", finalDesktopIp);
-                    result.putExtra("phone_ip", phoneIp);
-                    setResult(RESULT_OK, result);
-                    // Small delay so user sees "Paired" message
-                    mainHandler.postDelayed(PairingActivity.this::finish, 1000);
+                    // Launch MainActivity with pairing info
+                    Intent mainIntent = new Intent(PairingActivity.this, MainActivity.class);
+                    mainIntent.putExtra("desktop_ip", finalDesktopIp);
+                    mainIntent.putExtra("phone_ip", phoneIp);
+                    mainIntent.putExtra("wg_server_ip", finalWgServerIp);
+                    mainIntent.putExtra("wg_public_key", finalWgPublicKey);
+                    mainIntent.putExtra("wg_client_ip", finalWgClientIp);
+                    mainIntent.putExtra("wg_port", finalWgPort);
+                    startActivity(mainIntent);
+                    finish();
                 });
             } else {
                 runOnUiThread(() -> {
@@ -217,6 +264,31 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
                 });
             }
         });
+    }
+
+    private void connectToExistingPairing(String desktopIp) {
+        analysisExecutor.execute(() -> {
+            // Try to reconnect WireGuard if needed
+            if (wireGuardManager.isConnected()) {
+                runOnUiThread(() -> {
+                    statusText.setText("Reconnecting to " + desktopIp + "...");
+                    launchMainActivity(desktopIp);
+                });
+            } else {
+                // Try direct connection
+                runOnUiThread(() -> {
+                    statusText.setText("Connecting to " + desktopIp + "...");
+                    launchMainActivity(desktopIp);
+                });
+            }
+        });
+    }
+
+    private void launchMainActivity(String desktopIp) {
+        Intent mainIntent = new Intent(this, MainActivity.class);
+        mainIntent.putExtra("desktop_ip", desktopIp);
+        startActivity(mainIntent);
+        finish();
     }
 
     private boolean sendPairingRequest(String desktopIp, int port, String pairKey, String phoneIp) {
@@ -250,7 +322,7 @@ public class PairingActivity extends Activity implements ImageAnalysis.Analyzer,
 
     private String getLocalIpAddress() {
         try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            java.util.Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             if (interfaces == null) return null;
 
             for (NetworkInterface iface : Collections.list(interfaces)) {
