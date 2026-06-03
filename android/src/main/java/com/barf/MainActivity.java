@@ -30,6 +30,7 @@ import com.barf.pairing.WireGuardManager;
 import com.barf.robot.RobotController;
 import com.barf.runtime.JsRuntime;
 import com.barf.runtime.WasmRuntime;
+import com.barf.serial.UsbSerialManager;
 import com.barf.server.PhoneApiServer;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback, PhoneApiServer.ServerCallback {
@@ -176,6 +177,41 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
             wasmRuntime = new WasmRuntime();
             apiServer.setWasmRuntime(wasmRuntime);
             apiServer.setCallback(this);
+
+            // Setup USB-Serial for ESP32 communication
+            UsbSerialManager usbSerialManager = new UsbSerialManager(this);
+            usbSerialManager.setListener(new UsbSerialManager.UsbSerialListener() {
+                @Override
+                public void onConnected() {
+                    Log.i(TAG, "USB Serial connected");
+                    if (apiServer != null) {
+                        apiServer.broadcastSerialStatus(true);
+                    }
+                }
+
+                @Override
+                public void onDisconnected() {
+                    Log.i(TAG, "USB Serial disconnected");
+                    if (apiServer != null) {
+                        apiServer.broadcastSerialStatus(false);
+                    }
+                }
+
+                @Override
+                public void onMessageReceived(String line) {
+                    Log.d(TAG, "USB Serial RX: " + line);
+                    if (apiServer != null) {
+                        apiServer.broadcastSerialRx(line);
+                    }
+                }
+
+                @Override
+                public void onHeartbeatTimeout() {
+                    Log.w(TAG, "USB Serial heartbeat timeout");
+                }
+            });
+            apiServer.setUsbSerialManager(usbSerialManager);
+
             yolo.registerActivity(this);
             apiServer.start();
             videoStreamManager = new VideoStreamManager(cameraView, apiServer.getVideoStreamServer(), cameraManager);

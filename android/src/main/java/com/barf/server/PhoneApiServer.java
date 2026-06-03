@@ -7,6 +7,7 @@ import com.barf.SimpleWebSocketServer;
 import com.barf.VideoStreamServer;
 import com.barf.runtime.JsRuntime;
 import com.barf.runtime.WasmRuntime;
+import com.barf.serial.UsbSerialManager;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -19,15 +20,16 @@ import java.util.Map;
 
 /**
  * Slim HTTP/WebSocket API server for the BARF desktop companion app.
- * Replaces the old SimpleHttpServer (which served static files and MJPEG streams).
  *
  * Endpoints:
  *   POST /api/wasm       — deploy .wasm binary (stub)
  *   POST /api/js/run     — execute JS snippet
  *   POST /api/js/stop    — stop JS execution
  *   POST /api/serial     — write to serial (delegates to UsbSerialManager)
+ *   POST /api/firmware   — flash ESP32 over USB-OTG
  *   GET  /api/status     — health, FPS, serial state
  *   WS   /api/events     — detection JSON push, robot state updates
+ *   WS   /api/serial     — bidirectional serial relay
  */
 public class PhoneApiServer extends NanoHTTPD {
     private static final String TAG = "PhoneApiServer";
@@ -37,6 +39,7 @@ public class PhoneApiServer extends NanoHTTPD {
     private VideoStreamServer videoStreamServer;
     private JsRuntime jsRuntime;
     private WasmRuntime wasmRuntime;
+    private UsbSerialManager usbSerialManager;
     private boolean isOnline = false;
 
     // Callback for robot/serial actions
@@ -67,6 +70,10 @@ public class PhoneApiServer extends NanoHTTPD {
 
     public void setWasmRuntime(WasmRuntime wasmRuntime) {
         this.wasmRuntime = wasmRuntime;
+    }
+
+    public void setUsbSerialManager(UsbSerialManager manager) {
+        this.usbSerialManager = manager;
     }
 
     public VideoStreamServer getVideoStreamServer() {
@@ -143,6 +150,47 @@ public class PhoneApiServer extends NanoHTTPD {
         }
     }
 
+    /**
+     * Broadcast serial data from ESP32 to all WebSocket clients.
+     * Called by UsbSerialManager listener.
+     */
+    public void broadcastSerialRx(String line) {
+        if (webSocketServer == null) return;
+        try {
+            JsonObject msg = new JsonObject();
+            msg.addProperty("type", "serial_rx");
+            msg.addProperty("data", line);
+            msg.addProperty("timestamp", System.currentTimeMillis());
+            webSocketServer.broadcast(msg.toString());
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to broadcast serial_rx: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Broadcast serial connection status to all WebSocket clients.
+     */
+    public void broadcastSerialStatus(boolean connected) {
+        if (webSocketServer == null) return;
+        try {
+            JsonObject msg = new JsonObject();
+            msg.addProperty("type", "serial_status");
+            msg.addProperty("connected", connected);
+            webSocketServer.broadcast(msg.toString());
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to broadcast serial_status: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Send data to ESP32 over USB serial.
+     */
+    public void serialWrite(String data) {
+        if (usbSerialManager != null && usbSerialManager.isConnected()) {
+            usbSerialManager.write(data);
+        }
+    }
+
     @Override
     public Response serve(IHTTPSession session) {
         String uri = session.getUri();
@@ -182,7 +230,8 @@ public class PhoneApiServer extends NanoHTTPD {
                 if (method == Method.POST) return handleJsStop();
                 break;
             case "/api/serial":
-                if (method == Method.POST) return handleSerial(session);
+                if (method == Method.POST) return handleSerialWrite(session);
+                if (method == Method.GET) return handleSerialStatus();
                 break;
             case "/api/robot/move":
                 if (method == Method.POST) return handleRobotMove(session);
@@ -208,12 +257,39 @@ public class PhoneApiServer extends NanoHTTPD {
         status.addProperty("httpPort", getListeningPort());
         status.addProperty("wsPort", 8081);
         status.addProperty("jsRunning", jsRuntime != null && jsRuntime.isRunning());
+        status.addProperty("serialConnected", usbSerialManager != null && usbSerialManager.isConnected());
         if (webSocketServer != null) {
             status.addProperty("wsClients", webSocketServer.getClientCount());
         }
         if (callback != null) {
             status.addProperty("cameraFacing", callback.getCameraFacing());
         }
+        return createJsonResponse(Response.Status.OK, status.toString());
+    }
+
+    private Response handleSerialWrite(IHTTPSession session) {
+        try {
+            String body = getBody(session);
+            JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+            String data = json.has("data") ? json.get("data").getAsString() : "";
+
+            if (data.isEmpty()) {
+                return createJsonResponse(Response.Status.BAD_REQUEST, errorJson("No data provided"));
+            }
+
+            serialWrite(data);
+
+            JsonObject resp = new JsonObject();
+            resp.addProperty("success", true);
+            return createJsonResponse(Response.Status.OK, resp.toString());
+        } catch (Exception e) {
+            return createJsonResponse(Response.Status.BAD_REQUEST, errorJson(e.getMessage()));
+        }
+    }
+
+    private Response handleSerialStatus() {
+        JsonObject status = new JsonObject();
+        status.addProperty("connected", usbSerialManager != null && usbSerialManager.isConnected());
         return createJsonResponse(Response.Status.OK, status.toString());
     }
 
@@ -255,20 +331,6 @@ public class PhoneApiServer extends NanoHTTPD {
         resp.addProperty("success", true);
         resp.addProperty("message", "Script stopped");
         return createJsonResponse(Response.Status.OK, resp.toString());
-    }
-
-    private Response handleSerial(IHTTPSession session) {
-        // Serial write endpoint — in Phase 2.4 the UsbSerialManager handles this.
-        // For now, echo the request.
-        try {
-            String body = getBody(session);
-            JsonObject resp = new JsonObject();
-            resp.addProperty("success", true);
-            resp.addProperty("echo", body);
-            return createJsonResponse(Response.Status.OK, resp.toString());
-        } catch (Exception e) {
-            return createJsonResponse(Response.Status.BAD_REQUEST, errorJson(e.getMessage()));
-        }
     }
 
     private Response handleRobotMove(IHTTPSession session) {

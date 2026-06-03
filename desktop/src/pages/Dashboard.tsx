@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import QrPairingCard from "../components/QrPairingCard";
+import SerialMonitor from "../components/SerialMonitor";
 
 export default function Dashboard() {
   const [status, setStatus] = useState<any>({ isMoving: false, lastCommand: "none", cameraFacing: 0 });
   const [phoneIp, setPhoneIp] = useState("");
   const [speed, setSpeed] = useState(0.5);
   const [phoneStatus, setPhoneStatus] = useState<string>("Disconnected");
-  const [serialLog] = useState<string[]>([]);
 
   const handlePair = useCallback((ip: string) => {
     setPhoneIp(ip);
@@ -101,12 +101,7 @@ export default function Dashboard() {
         </article>
 
         {/* Serial Monitor */}
-        <article className="mb-4 break-inside-avoid rounded-xl border border-[#22242b] bg-[linear-gradient(160deg,#131419_0%,#0f1014_100%)] p-4 text-zinc-100 shadow-[0_16px_40px_rgba(0,0,0,0.28)]">
-          <div className="mb-3 text-sm font-semibold tracking-wide">Serial Monitor</div>
-          <pre className="bg-zinc-900 rounded p-2 text-xs font-mono h-32 overflow-y-auto text-zinc-400">
-            {serialLog.length === 0 ? "(no serial data)" : serialLog.slice(-20).map((l, i) => <div key={i}>{l}</div>)}
-          </pre>
-        </article>
+        <SerialMonitor phoneIp={phoneIp} connected={phoneStatus === "Connected"} />
       </section>
     </div>
   );
