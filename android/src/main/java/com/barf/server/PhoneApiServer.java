@@ -15,6 +15,11 @@ import com.google.gson.JsonParser;
 import fi.iki.elonen.NanoHTTPD;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -41,6 +46,7 @@ public class PhoneApiServer extends NanoHTTPD {
     private WasmRuntime wasmRuntime;
     private UsbSerialManager usbSerialManager;
     private boolean isOnline = false;
+    private final java.util.List<Thread> streamThreads = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     // Callback for robot/serial actions
     private ServerCallback callback;
@@ -105,7 +111,8 @@ public class PhoneApiServer extends NanoHTTPD {
 
     public void stop() {
         isOnline = false;
-        stop();
+        stopStreaming();
+        try { super.stop(); } catch (Exception ignored) {}
 
         if (webSocketServer != null) {
             webSocketServer.shutdown();
@@ -116,6 +123,13 @@ public class PhoneApiServer extends NanoHTTPD {
         }
 
         Log.i(TAG, "Servers stopped");
+    }
+
+    private void stopStreaming() {
+        for (Thread t : streamThreads) {
+            t.interrupt();
+        }
+        streamThreads.clear();
     }
 
     public boolean isOnline() {
@@ -223,6 +237,9 @@ public class PhoneApiServer extends NanoHTTPD {
         switch (uri) {
             case "/api/status":
                 return handleStatus();
+            case "/api/video":
+                if (method == Method.GET) return handleVideoStream();
+                break;
             case "/api/js/run":
                 if (method == Method.POST) return handleJsRun(session);
                 break;
@@ -247,6 +264,63 @@ public class PhoneApiServer extends NanoHTTPD {
                 break;
         }
         return createJsonResponse(Response.Status.NOT_FOUND, errorJson("API endpoint not found: " + uri));
+    }
+
+    private Response handleVideoStream() {
+        PipedInputStream pipedIn;
+        PipedOutputStream pipedOut;
+        try {
+            pipedIn = new PipedInputStream(65536);
+            pipedOut = new PipedOutputStream(pipedIn);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to create MJPEG pipe: " + e.getMessage());
+            return createJsonResponse(Response.Status.INTERNAL_ERROR, errorJson("Stream init failed"));
+        }
+
+        Thread streamThread = new Thread(() -> {
+            try {
+                writeMjpegFrames(pipedOut);
+            } finally {
+                streamThreads.remove(Thread.currentThread());
+            }
+        }, "mjpeg-stream");
+        streamThread.setDaemon(true);
+        streamThreads.add(streamThread);
+        streamThread.start();
+
+        Response resp = newChunkedResponse(Response.Status.OK,
+                "multipart/x-mixed-replace;boundary=frame", pipedIn);
+        resp.addHeader("Access-Control-Allow-Origin", "*");
+        return resp;
+    }
+
+    private void writeMjpegFrames(OutputStream out) {
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                byte[] frame = videoStreamServer.getNextFrame(500);
+                if (frame == null) {
+                    continue;
+                }
+                writeMjpegFrame(out, frame);
+            }
+        } catch (IOException e) {
+            Log.d(TAG, "MJPEG client disconnected: " + e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            try { out.close(); } catch (IOException ignored) {}
+        }
+    }
+
+    private void writeMjpegFrame(OutputStream out, byte[] jpeg) throws IOException {
+        String header = "--frame\r\n"
+                + "Content-Type: image/jpeg\r\n"
+                + "Content-Length: " + jpeg.length + "\r\n"
+                + "\r\n";
+        out.write(header.getBytes(StandardCharsets.US_ASCII));
+        out.write(jpeg);
+        out.write("\r\n".getBytes(StandardCharsets.US_ASCII));
+        out.flush();
     }
 
     private Response handleStatus() {
