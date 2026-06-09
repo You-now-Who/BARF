@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat;
 
 import com.barf.camera.CameraManager;
 import com.barf.camera.VideoStreamManager;
+import com.barf.pairing.CameraHandoffState;
 import com.barf.pairing.PairingManager;
 import com.barf.pairing.WireGuardManager;
 import com.barf.robot.RobotController;
@@ -47,7 +48,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private VideoStreamManager videoStreamManager;
     private SurfaceView cameraView;
     private static PhoneApiServer sApiServerStatic = null;
-    private boolean cameraClosedForPairing = false;
+    private final CameraHandoffState cameraHandoff = new CameraHandoffState();
     
     // Pairing info
     private String desktopIp;
@@ -122,12 +123,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         pairButton.setOnClickListener(v -> {
             try {
                 cameraManager.close();
-                cameraClosedForPairing = true;
+                cameraHandoff.setCameraClosedForPairing(true);
             } catch (Exception e) {
                 Log.w(TAG, "Error closing camera for pairing: " + e.getMessage());
             }
-            Intent pairIntent = new Intent(this, com.barf.pairing.PairingActivity.class);
-            startActivityForResult(pairIntent, REQUEST_PAIR);
+            // 300ms delay: NDK camera2 close is async at the OS level.
+            // Without this, CameraX in PairingActivity races the NDK camera for the hardware.
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                Intent pairIntent = new Intent(MainActivity.this, com.barf.pairing.PairingActivity.class);
+                startActivityForResult(pairIntent, REQUEST_PAIR);
+            }, 300);
         });
 
         spinnerTask = findViewById(R.id.spinnerTask);
@@ -214,6 +219,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
 
             yolo.registerActivity(this);
             apiServer.start();
+            apiServer.getWebSocketServer().setConnectionListener(new SimpleWebSocketServer.ConnectionListener() {
+                @Override
+                public void onDesktopConnected() {
+                    Log.i(TAG, "Desktop connected via WebSocket");
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Desktop connected", Toast.LENGTH_SHORT).show());
+                }
+
+                @Override
+                public void onDesktopDisconnected() {
+                    Log.i(TAG, "Desktop disconnected — switching to solo mode");
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "Desktop disconnected", Toast.LENGTH_SHORT).show());
+                }
+            });
             videoStreamManager = new VideoStreamManager(cameraView, apiServer.getVideoStreamServer(), cameraManager);
             videoStreamManager.start();
             Log.i(TAG, "Server started on port 8080");
@@ -243,7 +261,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
                 Toast.makeText(this, "Paired with " + desktopIp, Toast.LENGTH_SHORT).show();
             }
             // Always re-open camera after pairing attempt
-            cameraClosedForPairing = false;
+            cameraHandoff.onPairingComplete();
             cameraManager.open();
         }
     }
@@ -261,12 +279,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     }
     @Override public int getCameraFacing() { return cameraManager.getFacing(); }
 
-    // onStop() serves both Activity lifecycle and ServerCallback interface
+    // Activity lifecycle onStop — does NOT reset cameraClosedForPairing
     @Override
     public void onStop() {
         super.onStop();
+        cameraHandoff.onLifecycleStop();
+        // intentionally empty — do not reset cameraHandoff here
+    }
+
+    // ServerCallback: called when desktop sends robot stop command
+    @Override
+    public void onRobotStop() {
         robotController.stop();
-        cameraClosedForPairing = false;
     }
 
     // ========== SurfaceHolder.Callback ==========
@@ -297,7 +321,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_DENIED)
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA);
         // Don't open camera if we're returning from pairing (onActivityResult handles it)
-        if (!cameraClosedForPairing) {
+        if (!cameraHandoff.isCameraClosedForPairing()) {
             cameraManager.open();
         }
     }
@@ -305,7 +329,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     @Override
     public void onPause() {
         super.onPause();
-        if (!cameraClosedForPairing) {
+        if (!cameraHandoff.isCameraClosedForPairing()) {
             try { cameraManager.close(); } catch (Exception e) { Log.w(TAG, "close error: " + e.getMessage()); }
         }
     }

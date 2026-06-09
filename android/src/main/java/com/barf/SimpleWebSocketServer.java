@@ -19,9 +19,20 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class SimpleWebSocketServer extends WebSocketServer {
     private static final String TAG = "SimpleWebSocketServer";
-    
+
+    public interface ConnectionListener {
+        void onDesktopConnected();
+        void onDesktopDisconnected();
+    }
+
     // Thread-safe set of connected clients
     private final Set<WebSocket> clients = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    private ConnectionListener connectionListener;
+
+    public void setConnectionListener(ConnectionListener listener) {
+        this.connectionListener = listener;
+    }
     
     public SimpleWebSocketServer(int port) {
         super(new InetSocketAddress(port));
@@ -34,7 +45,11 @@ public class SimpleWebSocketServer extends WebSocketServer {
         clients.add(conn);
         String clientId = conn.getRemoteSocketAddress().toString();
         Log.i(TAG, "Client connected: " + clientId + " (total: " + clients.size() + ")");
-        
+
+        if (connectionListener != null) {
+            connectionListener.onDesktopConnected();
+        }
+
         // Send welcome message
         try {
             JsonObject welcome = new JsonObject();
@@ -42,7 +57,7 @@ public class SimpleWebSocketServer extends WebSocketServer {
             welcome.addProperty("message", "Connected to Android WebSocket server");
             welcome.addProperty("clientId", clientId);
             welcome.addProperty("timestamp", System.currentTimeMillis());
-            
+
             conn.send(welcome.toString());
             Log.d(TAG, "Welcome message sent to: " + clientId);
         } catch (Exception e) {
@@ -52,9 +67,15 @@ public class SimpleWebSocketServer extends WebSocketServer {
     
     @Override
     public void onClose(WebSocket conn, int code, String reason, boolean remote) {
-        clients.remove(conn);
+        boolean wasPresent = clients.remove(conn);
         String clientId = conn.getRemoteSocketAddress().toString();
         Log.i(TAG, "Client disconnected: " + clientId + " (code: " + code + ", reason: " + reason + ", total: " + clients.size() + ")");
+
+        // Only fire if we actually removed this client (prevents double-fire when onError
+        // already removed it before onClose is called for the same connection).
+        if (wasPresent && clients.isEmpty() && connectionListener != null) {
+            connectionListener.onDesktopDisconnected();
+        }
     }
     
     @Override
@@ -86,6 +107,8 @@ public class SimpleWebSocketServer extends WebSocketServer {
         String clientId = conn != null ? conn.getRemoteSocketAddress().toString() : "unknown";
         Log.e(TAG, "WebSocket error for " + clientId + ": " + ex.getMessage(), ex);
         if (conn != null) {
+            // onClose will follow this for the same connection, so don't fire the listener
+            // here — let onClose handle it via the wasPresent guard to avoid double-fire.
             clients.remove(conn);
         }
     }

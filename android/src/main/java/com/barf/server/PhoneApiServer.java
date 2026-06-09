@@ -54,7 +54,7 @@ public class PhoneApiServer extends NanoHTTPD {
     public interface ServerCallback {
         void onMove(String direction, float speed);
         void onRotate(String direction, float speed);
-        void onStop();
+        void onRobotStop();
         void onSwitchCamera();
         int getCameraFacing();
     }
@@ -444,7 +444,7 @@ public class PhoneApiServer extends NanoHTTPD {
     }
 
     private Response handleRobotStop() {
-        if (callback != null) callback.onStop();
+        if (callback != null) callback.onRobotStop();
         JsonObject resp = new JsonObject();
         resp.addProperty("success", true);
         return createJsonResponse(Response.Status.OK, resp.toString());
