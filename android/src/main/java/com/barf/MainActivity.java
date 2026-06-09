@@ -5,6 +5,8 @@ package com.barf;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
 import android.content.pm.PackageManager;
 import android.graphics.PixelFormat;
 import android.os.Bundle;
@@ -46,6 +48,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private JsRuntime jsRuntime;
     private WasmRuntime wasmRuntime;
     private VideoStreamManager videoStreamManager;
+    private UsbSerialManager usbSerialManager;
     private SurfaceView cameraView;
     private static PhoneApiServer sApiServerStatic = null;
     private final CameraHandoffState cameraHandoff = new CameraHandoffState();
@@ -184,7 +187,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
             apiServer.setCallback(this);
 
             // Setup USB-Serial for ESP32 communication
-            UsbSerialManager usbSerialManager = new UsbSerialManager(this);
+            usbSerialManager = new UsbSerialManager(this);
             usbSerialManager.setListener(new UsbSerialManager.UsbSerialListener() {
                 @Override
                 public void onConnected() {
@@ -216,6 +219,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
                 }
             });
             apiServer.setUsbSerialManager(usbSerialManager);
+            robotController.setUsbSerial(usbSerialManager);
+            // Try auto-connect in case ESP32 is already plugged in
+            usbSerialManager.connect();
 
             yolo.registerActivity(this);
             apiServer.start();
@@ -263,6 +269,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
             // Always re-open camera after pairing attempt
             cameraHandoff.onPairingComplete();
             cameraManager.open();
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction())) {
+            UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+            if (device != null && usbSerialManager != null) {
+                Log.i(TAG, "USB device attached via onNewIntent: " + device.getProductName());
+                usbSerialManager.connectToDevice(device);
+            }
         }
     }
 
@@ -337,6 +355,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (usbSerialManager != null) usbSerialManager.disconnect();
         if (videoStreamManager != null) videoStreamManager.stop();
         if (apiServer != null) apiServer.stop();
         if (robotController != null) robotController.shutdown();
