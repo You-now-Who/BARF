@@ -2,6 +2,7 @@ package com.barf.runtime;
 
 import android.util.Log;
 
+import com.barf.AppLog;
 import com.google.gson.Gson;
 
 import org.mozilla.javascript.Context;
@@ -144,11 +145,25 @@ public class JsRuntime {
             injectHelpers(rhinoContext, scope);
 
             rhinoContext.evaluateString(scope, script, "script", 1, null);
-            appendOutput("Script completed successfully");
+
+            // If the script registered an onDetection callback, it's event-driven —
+            // keep this thread alive so globalScope stays valid for pushDetections calls.
+            // Without this the finally block nulls globalScope before any frame arrives.
+            Object cb = ScriptableObject.getProperty(scope, "__yolo_onDetection");
+            if (cb instanceof Function) {
+                appendOutput("Detection callback registered — listening for frames...");
+                while (running.get()) {
+                    Thread.sleep(50);
+                }
+            } else {
+                appendOutput("Script completed");
+            }
 
         } catch (RhinoException e) {
             lastError = e.getMessage();
             appendOutput("Script error at line " + e.lineNumber() + ": " + e.details());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         } catch (Exception e) {
             lastError = e.getMessage();
             appendOutput("Error: " + e.getMessage());
@@ -187,7 +202,7 @@ public class JsRuntime {
     private void appendOutput(String message) {
         String timestamp = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
         output.append("[").append(timestamp).append("] ").append(message).append("\n");
-        Log.d(TAG, message);
+        AppLog.js(TAG, message);
     }
 
     public class JsApi {

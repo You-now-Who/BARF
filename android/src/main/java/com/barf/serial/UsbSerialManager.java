@@ -100,7 +100,8 @@ public class UsbSerialManager {
             PendingIntent pi = PendingIntent.getBroadcast(context, 0,
                     new Intent(ACTION_USB_PERMISSION),
                     PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-            context.registerReceiver(usbReceiver, new IntentFilter(ACTION_USB_PERMISSION));
+            context.registerReceiver(usbReceiver, new IntentFilter(ACTION_USB_PERMISSION),
+                    Context.RECEIVER_NOT_EXPORTED);
             usbManager.requestPermission(device, pi);
             return false;
         }

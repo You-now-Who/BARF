@@ -14,8 +14,15 @@ import java.util.Locale;
  */
 public class AppLog {
     private static final int MAX_LINES = 400;
+
+    // System log
     private static final ArrayDeque<String> lines = new ArrayDeque<>();
     private static volatile Listener listener;
+
+    // JS-only log
+    private static final ArrayDeque<String> jsLines = new ArrayDeque<>();
+    private static volatile Listener jsListener;
+
     private static final SimpleDateFormat fmt =
             new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
 
@@ -25,10 +32,18 @@ public class AppLog {
 
     public static void setListener(Listener l) {
         listener = l;
-        // Replay existing lines to the new listener so it sees history
         if (l != null) {
             synchronized (AppLog.class) {
                 for (String line : lines) l.onNewLine(line);
+            }
+        }
+    }
+
+    public static void setJsListener(Listener l) {
+        jsListener = l;
+        if (l != null) {
+            synchronized (AppLog.class) {
+                for (String line : jsLines) l.onNewLine(line);
             }
         }
     }
@@ -37,6 +52,18 @@ public class AppLog {
     public static void d(String tag, String msg) { log("D", tag, msg); Log.d(tag, msg); }
     public static void w(String tag, String msg) { log("W", tag, msg); Log.w(tag, msg); }
     public static void e(String tag, String msg) { log("E", tag, msg); Log.e(tag, msg); }
+
+    /** Routes to the JS log panel only (not the system log). */
+    public static void js(String tag, String msg) {
+        String line = fmt.format(new Date()) + " JS: " + msg;
+        synchronized (AppLog.class) {
+            if (jsLines.size() >= MAX_LINES) jsLines.pollFirst();
+            jsLines.addLast(line);
+        }
+        Listener l = jsListener;
+        if (l != null) l.onNewLine(line);
+        Log.d(tag, "[JS] " + msg);
+    }
 
     private static synchronized void log(String level, String tag, String msg) {
         String line = fmt.format(new Date()) + " " + level + "/" + tag + ": " + msg;
@@ -48,5 +75,9 @@ public class AppLog {
 
     public static synchronized void clear() {
         lines.clear();
+    }
+
+    public static synchronized void clearJs() {
+        jsLines.clear();
     }
 }

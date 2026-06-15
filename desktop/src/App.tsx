@@ -1,14 +1,16 @@
 import { useState } from "react";
 import "./app.css";
 import Dashboard from "./pages/Dashboard";
+import JsEditor from "./pages/JsEditor";
 import VisionEditor from "./pages/VisionEditor";
 import FirmwareEditor from "./pages/FirmwareEditor";
 import SettingsPage from "./pages/SettingsPage";
 
-type Route = "dashboard" | "vision" | "firmware" | "settings";
+type Route = "dashboard" | "script" | "vision" | "firmware" | "settings";
 
 const tabs: { key: Route; label: string }[] = [
   { key: "dashboard", label: "Dashboard" },
+  { key: "script", label: "Script (JS)" },
   { key: "vision", label: "Vision (WASM)" },
   { key: "firmware", label: "Firmware (ESP32)" },
   { key: "settings", label: "Settings" },
@@ -44,6 +46,7 @@ export function App() {
 
         <section className="mx-auto max-w-[90vw]">
           {route === "dashboard" && <Dashboard />}
+          {route === "script" && <JsEditor />}
           {route === "vision" && <VisionEditor />}
           {route === "firmware" && <FirmwareEditor />}
           {route === "settings" && <SettingsPage />}

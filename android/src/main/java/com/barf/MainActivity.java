@@ -14,6 +14,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.content.pm.ActivityInfo;
 import android.util.Log;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
@@ -25,6 +27,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.ViewFlipper;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -71,6 +74,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private TextView tvDeviceInfo;
     private TextView tvLog;
     private ScrollView scrollLog;
+    private TextView tvLogJs;
+    private ScrollView scrollLogJs;
+    private ViewFlipper logFlipper;
+    private Button btnTabSys;
+    private Button btnTabJs;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     @Override
@@ -132,12 +140,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         tvDeviceInfo = findViewById(R.id.tvDeviceInfo);
         tvLog = findViewById(R.id.tvLog);
         scrollLog = findViewById(R.id.scrollLog);
+        tvLogJs = findViewById(R.id.tvLogJs);
+        scrollLogJs = findViewById(R.id.scrollLogJs);
+        logFlipper = findViewById(R.id.logFlipper);
+        btnTabSys = findViewById(R.id.btnTabSys);
+        btnTabJs = findViewById(R.id.btnTabJs);
 
-        // Wire in-app logger: every AppLog call appends to the on-screen TextView
+        // Wire in-app loggers
         AppLog.setListener(line -> mainHandler.post(() -> {
             tvLog.append(line + "\n");
             scrollLog.post(() -> scrollLog.fullScroll(View.FOCUS_DOWN));
         }));
+        AppLog.setJsListener(line -> mainHandler.post(() -> {
+            tvLogJs.append(line + "\n");
+            scrollLogJs.post(() -> scrollLogJs.fullScroll(View.FOCUS_DOWN));
+        }));
+
+        // Tab buttons
+        btnTabSys.setOnClickListener(v -> showLogTab(0));
+        btnTabJs.setOnClickListener(v -> showLogTab(1));
+
+        // Swipe to switch log tabs
+        GestureDetector gestureDetector = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+                    private static final int SWIPE_MIN_DISTANCE = 80;
+                    private static final int SWIPE_MIN_VELOCITY = 100;
+
+                    @Override
+                    public boolean onFling(MotionEvent e1, MotionEvent e2,
+                                          float vX, float vY) {
+                        if (e1 == null || e2 == null) return false;
+                        float dx = e2.getX() - e1.getX();
+                        if (Math.abs(dx) < SWIPE_MIN_DISTANCE) return false;
+                        if (Math.abs(vX) < SWIPE_MIN_VELOCITY) return false;
+                        if (dx < 0) showLogTab(1); // swipe left → JS
+                        else        showLogTab(0); // swipe right → SYS
+                        return true;
+                    }
+                });
+        logFlipper.setOnTouchListener((v, event) -> gestureDetector.onTouchEvent(event));
+
         AppLog.i(TAG, "BARF starting up");
 
         Button switchCam = findViewById(R.id.buttonSwitchCamera);
@@ -162,7 +204,6 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
             }, 300);
         });
 
-        // Motor test: send full speed for 500ms then auto-stop
         Button btnMotorTest = findViewById(R.id.btnMotorTest);
         btnMotorTest.setOnClickListener(v -> sendMotorTest());
 
@@ -185,8 +226,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
 
         Button btnClearLog = findViewById(R.id.btnClearLog);
         btnClearLog.setOnClickListener(v -> {
-            AppLog.clear();
-            tvLog.setText("");
+            if (logFlipper.getDisplayedChild() == 1) {
+                AppLog.clearJs();
+                tvLogJs.setText("");
+            } else {
+                AppLog.clear();
+                tvLog.setText("");
+            }
         });
 
         spinnerTask = findViewById(R.id.spinnerTask);
@@ -199,6 +245,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         reload();
         robotController = new RobotController();
         startServer();
+    }
+
+    private void showLogTab(int idx) {
+        logFlipper.setDisplayedChild(idx);
+        btnTabSys.setTextColor(idx == 0 ? 0xFF22CC22 : 0xFF444444);
+        btnTabSys.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                idx == 0 ? 0xFF0d2b0d : 0xFF1a1a1a));
+        btnTabJs.setTextColor(idx == 1 ? 0xFFFFAA33 : 0xFF444444);
+        btnTabJs.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                idx == 1 ? 0xFF2b1a00 : 0xFF1a1a1a));
     }
 
     private AdapterView.OnItemSelectedListener spinnerListener(int idx, java.util.function.Supplier<Integer> getter, java.util.function.Consumer<Integer> setter) {
@@ -242,11 +298,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
             usbSerialManager.setListener(new UsbSerialManager.UsbSerialListener() {
                 @Override
                 public void onConnected() {
-                    AppLog.i(TAG, "ESP32 connected — auto-sending motor test in 300ms");
+                    AppLog.i(TAG, "ESP32 connected");
                     runOnUiThread(() -> setEspStatus(true));
                     if (apiServer != null) apiServer.broadcastSerialStatus(true);
-                    // Auto motor test on connect so you can immediately verify the link
-                    mainHandler.postDelayed(() -> sendMotorTest(), 300);
                 }
 
                 @Override
@@ -315,19 +369,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private void sendMotorTest() {
         if (usbSerialManager == null || !usbSerialManager.isConnected()) {
             AppLog.w(TAG, "Motor test: ESP32 not connected");
+            runOnUiThread(() -> Toast.makeText(this, "ESP32 not connected", Toast.LENGTH_SHORT).show());
             return;
         }
-        String cmd = "{\"m\":[255,255,255,255]}\n";
-        usbSerialManager.write(cmd);
-        AppLog.i(TAG, "TX motor test: " + cmd.trim());
-        // Auto-stop after 500ms so motors don't keep spinning
-        mainHandler.postDelayed(() -> {
-            if (usbSerialManager != null && usbSerialManager.isConnected()) {
-                String stop = "{\"m\":[0,0,0,0]}\n";
-                usbSerialManager.write(stop);
-                AppLog.i(TAG, "TX auto-stop: " + stop.trim());
-            }
-        }, 500);
+        // Wah wah: forward pulse → stop → reverse pulse → stop
+        String fwd  = "{\"m\":[200,200,200,200]}\n";
+        String rev  = "{\"m\":[-200,-200,-200,-200]}\n";
+        String stop = "{\"m\":[0,0,0,0]}\n";
+        AppLog.i(TAG, "Motor test: wah wah");
+        usbSerialManager.write(fwd);
+        mainHandler.postDelayed(() -> usbSerialManager.write(stop),  300);
+        mainHandler.postDelayed(() -> usbSerialManager.write(rev),   450);
+        mainHandler.postDelayed(() -> usbSerialManager.write(stop),  750);
     }
 
     public static void pushDetectionsToScripts(String json) {
