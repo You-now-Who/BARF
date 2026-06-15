@@ -97,6 +97,29 @@ public class PhoneApiServer extends NanoHTTPD {
             Log.i(TAG, "HTTP server started on port " + getListeningPort());
 
             webSocketServer = new SimpleWebSocketServer(8081);
+            webSocketServer.setNewClientListener(conn -> {
+                // Push current serial status immediately so the client doesn't
+                // have to wait for the next connect/disconnect event.
+                try {
+                    JsonObject status = new JsonObject();
+                    status.addProperty("type", "serial_status");
+                    status.addProperty("connected", usbSerialManager != null && usbSerialManager.isConnected());
+                    conn.send(status.toString());
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to send initial serial status: " + e.getMessage());
+                }
+            });
+            webSocketServer.setMessageListener(message -> {
+                try {
+                    JsonObject msg = JsonParser.parseString(message).getAsJsonObject();
+                    if ("write".equals(msg.has("action") ? msg.get("action").getAsString() : null)) {
+                        String data = msg.has("data") ? msg.get("data").getAsString() : "";
+                        if (!data.isEmpty()) serialWrite(data);
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "WS message parse error: " + e.getMessage());
+                }
+            });
             webSocketServer.start();
             Log.i(TAG, "WebSocket server started on port 8081");
 

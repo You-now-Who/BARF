@@ -10,6 +10,7 @@ export default function Dashboard() {
 
   const handlePair = useCallback((ip: string) => {
     setPhoneIp(ip);
+    if (!ip) setPhoneStatus("Disconnected");
   }, []);
 
   useEffect(() => {
@@ -28,9 +29,11 @@ export default function Dashboard() {
         const json = await res.json();
         setStatus((prev: any) => ({ ...prev, ...json }));
       } else {
+        console.warn(`[BARF] /api/status returned ${res.status} from ${phoneIp}`);
         setPhoneStatus("Disconnected");
       }
-    } catch {
+    } catch (e) {
+      console.warn(`[BARF] Cannot reach phone at http://${phoneIp}:8080/api/status —`, e);
       setPhoneStatus("Disconnected");
     }
   }
