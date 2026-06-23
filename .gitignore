@@ -47,6 +47,7 @@ tools/merged_dataset/
 tools/metal-balls-3/
 tools/runs/
 tools/yolo11n.pt
+tools/yolo11n_balls*
 
 # PlatformIO firmware project (separate workflow, not ready to track)
 sdk/firmware_platformio/
