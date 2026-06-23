@@ -15,11 +15,15 @@
 #define MOTOR_FR 1   // Front Right
 #define MOTOR_BL 2   // Back Left
 #define MOTOR_BR 3   // Back Right
+#define MOTOR_AUX1 4 // Auxiliary mechanism 1 (e.g. arm)
+#define MOTOR_AUX2 5 // Auxiliary mechanism 2 (e.g. intake/gripper)
+
+#define MOTOR_CHANNEL_COUNT 6
 
 // ── Motor state ────────────────────────────────────────
 
 struct MotorState {
-    int16_t speeds[4] = {0, 0, 0, 0};
+    int16_t speeds[MOTOR_CHANNEL_COUNT] = {0, 0, 0, 0, 0, 0};
     unsigned long last_command_ms = 0;
 
     // If no command received in this window, motors stop (safety feature)

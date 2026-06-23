@@ -202,6 +202,7 @@ public class UsbSerialManager {
         }
         try {
             port.write(data.getBytes("UTF-8"), 200);
+            AppLog.d(TAG, "TX: " + data.trim());
         } catch (IOException e) {
             AppLog.e(TAG, "Write error: " + e.getMessage());
             handleDisconnect();

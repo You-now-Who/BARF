@@ -40,3 +40,13 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
+
+# YOLO datasets / training artifacts (regenerate via tools/finetune.ipynb)
+tools/Ping-Pong-Detection-3/
+tools/merged_dataset/
+tools/metal-balls-3/
+tools/runs/
+tools/yolo11n.pt
+
+# PlatformIO firmware project (separate workflow, not ready to track)
+sdk/firmware_platformio/

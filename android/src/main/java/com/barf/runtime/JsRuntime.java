@@ -3,7 +3,6 @@ package com.barf.runtime;
 import android.util.Log;
 
 import com.barf.AppLog;
-import com.google.gson.Gson;
 
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.Function;
@@ -31,8 +30,6 @@ public class JsRuntime {
     private Context rhinoContext = null;
     private volatile String lastDetectionsJson = "[]";
     private volatile ScriptableObject globalScope = null;
-    private final Gson gson = new Gson();
-
     private JsCommandCallback callback;
 
     public interface JsCommandCallback {
@@ -120,7 +117,10 @@ public class JsRuntime {
             Object cb = ScriptableObject.getProperty(scope, "__yolo_onDetection");
             if (cb instanceof Function) {
                 Function fn = (Function) cb;
-                Object arg = Context.javaToJS(gson.fromJson(detectionsJson, Object.class), scope);
+                // Eval as a JS expression so frame.yolo / frame["yolo"] work natively.
+                // javaToJS(gson.fromJson(...)) produces a LinkedTreeMap wrapper where
+                // property access returns undefined instead of map values.
+                Object arg = cx.evaluateString(scope, "(" + detectionsJson + ")", "<det>", 1, null);
                 fn.call(cx, scope, scope, new Object[]{arg});
             }
         } catch (Exception e) {
