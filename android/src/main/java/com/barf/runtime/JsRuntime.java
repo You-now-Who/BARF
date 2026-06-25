@@ -11,6 +11,7 @@ import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,17 +30,24 @@ public class JsRuntime {
     private Thread executionThread = null;
     private Context rhinoContext = null;
     private volatile String lastDetectionsJson = "[]";
+    private volatile float accelX = 0, accelY = 0, accelZ = 0;
     private volatile ScriptableObject globalScope = null;
     private JsCommandCallback callback;
+    private Runnable startListener;
 
     public interface JsCommandCallback {
         void onMove(String direction, float speed);
         void onRotate(String direction, float speed);
         void onStop();
+        void onRawMotors(int[] speeds);
     }
 
     public void setCallback(JsCommandCallback callback) {
         this.callback = callback;
+    }
+
+    public void setStartListener(Runnable listener) {
+        this.startListener = listener;
     }
 
     public boolean isRunning() {
@@ -66,6 +74,7 @@ public class JsRuntime {
 
         clearOutput();
         running.set(true);
+        if (startListener != null) startListener.run();
 
         executionThread = new Thread(() -> {
             try {
@@ -86,6 +95,10 @@ public class JsRuntime {
         if (!running.get()) return;
         running.set(false);
 
+        synchronized (this) {
+            globalScope = null;
+        }
+
         if (executionThread != null) {
             executionThread.interrupt();
         }
@@ -100,9 +113,15 @@ public class JsRuntime {
         appendOutput("Script stopped by user");
     }
 
+    public void setAccelerometer(float x, float y, float z) {
+        accelX = x; accelY = y; accelZ = z;
+    }
+
     public void pushDetections(String detectionsJson) {
         if (detectionsJson == null) detectionsJson = "[]";
         lastDetectionsJson = detectionsJson;
+
+        if (!running.get()) return;
 
         ScriptableObject scope;
         synchronized (this) {
@@ -186,11 +205,13 @@ public class JsRuntime {
             "function print(msg) { robot.log(msg); }\n" +
             "function onDetection(fn) { this.__yolo_onDetection = fn; }\n" +
             "function getLastDetections() { try { return JSON.parse(robot.getLastDetections()); } catch(e) { return []; } }\n" +
+            "function getAccelerometer() { try { return JSON.parse(robot.getAccelerometer()); } catch(e) { return {x:0,y:0,z:0}; } }\n" +
             "var FORWARD = 'forward';\n" +
             "var BACKWARD = 'backward';\n" +
             "var LEFT = 'left';\n" +
             "var RIGHT = 'right';\n" +
-            "var console = { log: function(msg) { robot.log(msg); } };\n";
+            "var console = { log: function(msg) { robot.log(msg); } };\n" +
+            "function rawMotors(arr) { robot.rawMotors(arr); }\n";
 
         cx.evaluateString(scope, helpers, "helpers", 1, null);
 
@@ -206,23 +227,54 @@ public class JsRuntime {
     }
 
     public class JsApi {
-        public void move(String direction, double speed) {
+        public void move(String direction, Object speedObj) {
             checkRunning();
-            float s = Math.max(0f, Math.min(1f, (float) speed));
+            float s = toSpeed(speedObj, 0.5f);
             appendOutput("move('" + direction + "', " + s + ")");
             if (callback != null) callback.onMove(direction, s);
         }
 
-        public void rotate(String direction, double speed) {
+        public void rotate(String direction, Object speedObj) {
             checkRunning();
-            float s = Math.max(0f, Math.min(1f, (float) speed));
+            float s = toSpeed(speedObj, 0.35f);
             appendOutput("rotate('" + direction + "', " + s + ")");
             if (callback != null) callback.onRotate(direction, s);
+        }
+
+        private float toSpeed(Object v, float def) {
+            if (v == null || v instanceof org.mozilla.javascript.Undefined) return def;
+            if (v instanceof Number) return Math.max(0f, Math.min(1f, ((Number) v).floatValue()));
+            try { return Math.max(0f, Math.min(1f, Float.parseFloat(v.toString()))); } catch (Exception e) { return def; }
         }
 
         public void stop() {
             appendOutput("stop()");
             if (callback != null) callback.onStop();
+        }
+
+        /**
+         * Send raw per-motor values directly, bypassing the mixing formula.
+         * Use this to identify motor wiring: rawMotors([255,0,0,0,0,0]) spins motor 0 only.
+         * Indices: [FL, FR, LIFT, BL, BR, LIFT]. Range -255..255.
+         */
+        @SuppressWarnings("unused")
+        public void rawMotors(Object arr) {
+            if (callback == null) return;
+            int[] speeds = new int[6];
+            try {
+                if (arr instanceof org.mozilla.javascript.NativeArray) {
+                    org.mozilla.javascript.NativeArray na = (org.mozilla.javascript.NativeArray) arr;
+                    for (int i = 0; i < Math.min(6, (int) na.getLength()); i++) {
+                        Object v = na.get(i, na);
+                        speeds[i] = (v instanceof Number) ? Math.max(-255, Math.min(255, ((Number) v).intValue())) : 0;
+                    }
+                }
+            } catch (Exception e) {
+                appendOutput("rawMotors error: " + e.getMessage());
+                return;
+            }
+            appendOutput("rawMotors(" + Arrays.toString(speeds) + ")");
+            callback.onRawMotors(speeds);
         }
 
         @SuppressWarnings("unused")
@@ -245,6 +297,11 @@ public class JsRuntime {
 
         public String getLastDetections() {
             return lastDetectionsJson != null ? lastDetectionsJson : "[]";
+        }
+
+        public String getAccelerometer() {
+            return String.format(java.util.Locale.US,
+                "{\"x\":%.4f,\"y\":%.4f,\"z\":%.4f}", accelX, accelY, accelZ);
         }
 
         private void checkRunning() {

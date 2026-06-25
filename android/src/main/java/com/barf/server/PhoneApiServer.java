@@ -390,6 +390,19 @@ public class PhoneApiServer extends NanoHTTPD {
         return createJsonResponse(Response.Status.OK, status.toString());
     }
 
+    private static final String PREFS_NAME = "barf_js";
+    private static final String PREFS_KEY_SCRIPT = "saved_script";
+
+    public void saveScript(String script) {
+        context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+               .edit().putString(PREFS_KEY_SCRIPT, script).apply();
+    }
+
+    public String loadSavedScript() {
+        return context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                      .getString(PREFS_KEY_SCRIPT, null);
+    }
+
     private Response handleJsRun(IHTTPSession session) {
         try {
             String body = getBody(session);
@@ -405,9 +418,10 @@ public class PhoneApiServer extends NanoHTTPD {
             }
 
             if (jsRuntime.isRunning()) {
-                return createJsonResponse(Response.Status.BAD_REQUEST, errorJson("Script already running"));
+                jsRuntime.stop();
             }
 
+            saveScript(script);
             jsRuntime.execute(script);
 
             JsonObject resp = new JsonObject();

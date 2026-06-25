@@ -1,0 +1,16 @@
+# Requirements for LatestCode_30-03 (Raspberry Pi robot)
+# Install with: pip install -r requirements_unibots_pi.txt
+
+# Computer vision
+opencv-python-headless>=4.8.0
+numpy>=1.26.0
+
+# AprilTag detection
+pupil-apriltags>=1.0.2
+
+# GPIO / hardware
+gpiozero>=2.0
+lgpio>=0.2.2
+
+# Servo controller (Adafruit PCA9685 over I2C)
+adafruit-circuitpython-servokit>=1.3.11

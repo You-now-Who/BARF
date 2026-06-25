@@ -12,6 +12,7 @@ import android.graphics.PixelFormat;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.content.pm.ActivityInfo;
 import android.util.Log;
 import android.view.GestureDetector;
@@ -43,7 +44,7 @@ import com.barf.runtime.WasmRuntime;
 import com.barf.serial.UsbSerialManager;
 import com.barf.server.PhoneApiServer;
 
-public class MainActivity extends Activity implements SurfaceHolder.Callback, PhoneApiServer.ServerCallback {
+public class MainActivity extends Activity implements SurfaceHolder.Callback, PhoneApiServer.ServerCallback, android.hardware.SensorEventListener {
     public static final int REQUEST_CAMERA = 100;
     private static final int REQUEST_PAIR = 200;
     private static final String TAG = "MainActivity";
@@ -51,6 +52,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     private YoloBridge yolo = new YoloBridge();
     private CameraManager cameraManager;
     private RobotController robotController;
+    private android.hardware.SensorManager sensorManager;
+    private android.hardware.Sensor accelerometer;
     private PhoneApiServer apiServer;
     private JsRuntime jsRuntime;
     private WasmRuntime wasmRuntime;
@@ -68,6 +71,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
 
     private Spinner spinnerTask, spinnerModel, spinnerCPUGPU;
     private int current_task = 0, current_model = 0, current_cpugpu = 0;
+
+    private PowerManager.WakeLock jsWakeLock;
 
     // Debug UI
     private TextView tvEspStatus;
@@ -244,6 +249,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
 
         reload();
         robotController = new RobotController();
+        sensorManager = (android.hardware.SensorManager) getSystemService(SENSOR_SERVICE);
+        if (sensorManager != null) {
+            accelerometer = sensorManager.getDefaultSensor(android.hardware.Sensor.TYPE_ACCELEROMETER);
+        }
         startServer();
     }
 
@@ -282,11 +291,22 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         try {
             apiServer = new PhoneApiServer(this, 8080);
             sApiServerStatic = apiServer;
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            jsWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BARF:JsRuntime");
+            jsWakeLock.setReferenceCounted(false);
+
             jsRuntime = new JsRuntime();
             jsRuntime.setCallback(new JsRuntime.JsCommandCallback() {
                 @Override public void onMove(String d, float s) { robotController.move(d, s); }
                 @Override public void onRotate(String d, float s) { robotController.rotate(d, s); }
-                @Override public void onStop() { robotController.stop(); }
+                @Override public void onRawMotors(int[] speeds) { robotController.setRawSpeeds(speeds); }
+                @Override public void onStop() {
+                    robotController.stop();
+                    if (jsWakeLock != null && jsWakeLock.isHeld()) jsWakeLock.release();
+                }
+            });
+            jsRuntime.setStartListener(() -> {
+                if (jsWakeLock != null && !jsWakeLock.isHeld()) jsWakeLock.acquire();
             });
             apiServer.setJsRuntime(jsRuntime);
             wasmRuntime = new WasmRuntime();
@@ -345,6 +365,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
 
             // Auto-connect after WebSocket server is up so broadcastSerialStatus reaches clients
             usbSerialManager.connect();
+
+            // Auto-run saved JS script (competition solo mode)
+            String savedScript = apiServer.loadSavedScript();
+            if (savedScript != null && !savedScript.isEmpty()) {
+                AppLog.i(TAG, "Auto-running saved JS script");
+                mainHandler.postDelayed(() -> {
+                    try {
+                        if (jsRuntime != null && !jsRuntime.isRunning()) {
+                            jsRuntime.execute(savedScript);
+                        }
+                    } catch (Exception e2) {
+                        AppLog.e(TAG, "Auto-run JS failed: " + e2.getMessage());
+                    }
+                }, 1500);
+            }
         } catch (Exception e) {
             AppLog.e(TAG, "Failed to start server: " + e.getMessage());
             Toast.makeText(this, "Server failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
@@ -482,6 +517,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         if (usbSerialManager != null && !usbSerialManager.isConnected()) {
             usbSerialManager.reconnect();
         }
+        if (sensorManager != null && accelerometer != null) {
+            sensorManager.registerListener(this, accelerometer, android.hardware.SensorManager.SENSOR_DELAY_GAME);
+        }
     }
 
     @Override
@@ -490,11 +528,24 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         if (!cameraHandoff.isCameraClosedForPairing()) {
             try { cameraManager.close(); } catch (Exception e) { AppLog.w(TAG, "close error: " + e.getMessage()); }
         }
+        if (sensorManager != null) sensorManager.unregisterListener(this);
     }
+
+    @Override
+    public void onSensorChanged(android.hardware.SensorEvent event) {
+        if (event.sensor.getType() == android.hardware.Sensor.TYPE_ACCELEROMETER && jsRuntime != null) {
+            jsRuntime.setAccelerometer(event.values[0], event.values[1], event.values[2]);
+        }
+    }
+
+    @Override
+    public void onAccuracyChanged(android.hardware.Sensor sensor, int accuracy) {}
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (jsWakeLock != null && jsWakeLock.isHeld()) jsWakeLock.release();
+        if (jsRuntime != null && jsRuntime.isRunning()) jsRuntime.stop();
         if (usbSerialManager != null) usbSerialManager.disconnect();
         if (videoStreamManager != null) videoStreamManager.stop();
         if (apiServer != null) apiServer.stop();

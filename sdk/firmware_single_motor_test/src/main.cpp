@@ -1,95 +1,100 @@
-// main.cpp — single-motor test firmware.
-//
-// Drives ONE motor channel (GPIO 32/33, DRV8833 two-pin PWM) from
-// {"m":[...]} commands. Only m[0] is read; everything else is ignored.
-// Logs every step over Serial so you can tell exactly where things break:
-//   - "RX line: ..."      -> a line of serial data arrived at all
-//   - "parsed m[0] = ..."  -> it was valid JSON with an "m" array
-//   - "PWM a=.. b=.."      -> the GPIO/PWM write actually happened
-//
-// Wiring: GPIO 32 -> DRV8833 AIN1, GPIO 33 -> DRV8833 AIN2 (or however your
-// breakout labels its first channel's two inputs).
-//
-// Send e.g. {"m":[150]} or {"m":[100,100,100,100]} (only index 0 is used)
-// over the serial monitor at 115200 baud, newline-terminated.
-
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
-static const uint8_t PIN_A = 32;
-static const uint8_t PIN_B = 33;
+/*
+  Motor Control Logic (DRV8833):
+  IN1 = HIGH, IN2 = LOW  -> Forward
+  IN1 = LOW,  IN2 = HIGH -> Reverse
+  IN1 = LOW,  IN2 = LOW  -> Coast/Stop
+
+  Pin mapping:
+  m[0] -> Driver 1: GPIO32, GPIO33
+  m[1] -> Driver 2: GPIO25, GPIO26
+  m[2] -> Driver 3: GPIO27, GPIO14 (LIFT)
+  m[3] -> Driver 4: GPIO16, GPIO17
+  m[4] -> Driver 5: GPIO18, GPIO19
+  m[5] -> Driver 6: GPIO21, GPIO22 (LIFT)
+*/
+
+const int numMotors = 6;
+const int in1Pins[numMotors] = {32, 25, 27, 16, 18, 21};
+const int in2Pins[numMotors] = {33, 26, 14, 17, 19, 22};
 
 static String g_serialBuffer;
 
-static void setMotor(int16_t speed) {
-    int duty = constrain((int)abs(speed), 0, 255);
-    int a = speed >= 0 ? duty : 0;
-    int b = speed >= 0 ? 0 : duty;
-    analogWrite(PIN_A, a);
-    analogWrite(PIN_B, b);
-    Serial.printf("{\"l\":\"PWM a=%d b=%d (speed=%d)\"}\n", a, b, speed);
+static void setMotor(int index, int16_t speed) {
+  int duty = constrain(abs(speed), 0, 255);
+
+  if (speed > 0) {
+    analogWrite(in1Pins[index], duty);
+    analogWrite(in2Pins[index], 0);
+  } else if (speed < 0) {
+    analogWrite(in1Pins[index], 0);
+    analogWrite(in2Pins[index], duty);
+  } else {
+    analogWrite(in1Pins[index], 0);
+    analogWrite(in2Pins[index], 0);
+  }
+
+  Serial.printf("{\"l\":\"motor %d speed=%d\"}\n", index, speed);
 }
 
 static void processLine(const String& line) {
-    Serial.print("{\"l\":\"RX line: ");
-    Serial.print(line);
-    Serial.println("\"}");
+  Serial.print("{\"l\":\"RX: ");
+  Serial.print(line);
+  Serial.println("\"}");
 
-    if (line.length() == 0 || line.charAt(0) != '{') return;
+  if (line.length() == 0 || line.charAt(0) != '{') return;
 
-    StaticJsonDocument<256> doc;
-    DeserializationError err = deserializeJson(doc, line);
-    if (err) {
-        Serial.print("{\"l\":\"JSON error: ");
-        Serial.print(err.c_str());
-        Serial.println("\"}");
-        return;
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, line);
+  if (err) {
+    Serial.printf("{\"l\":\"JSON error: %s\"}\n", err.c_str());
+    return;
+  }
+
+  if (doc.containsKey("m")) {
+    JsonArray arr = doc["m"].as<JsonArray>();
+    for (int i = 0; i < numMotors && i < (int)arr.size(); i++) {
+      int16_t speed = constrain((int)arr[i], -255, 255);
+      setMotor(i, speed);
     }
-
-    if (doc.containsKey("m")) {
-        JsonArray arr = doc["m"].as<JsonArray>();
-        if (arr.size() == 0) {
-            Serial.println("{\"l\":\"m array empty\"}");
-            return;
-        }
-        int16_t speed = constrain((int)arr[0], -255, 255);
-        Serial.print("{\"l\":\"parsed m[0] = ");
-        Serial.print(speed);
-        Serial.println("\"}");
-        setMotor(speed);
-    } else if (doc.containsKey("c")) {
-        const char* cmd = doc["c"];
-        if (strcmp(cmd, "ping") == 0) {
-            Serial.println("{\"c\":\"pong\"}");
-        }
+  } else if (doc.containsKey("c")) {
+    const char* cmd = doc["c"];
+    if (strcmp(cmd, "ping") == 0) {
+      Serial.println("{\"c\":\"pong\"}");
+    } else if (strcmp(cmd, "stop") == 0) {
+      for (int i = 0; i < numMotors; i++) setMotor(i, 0);
     }
+  }
 }
 
 static void readSerial() {
-    while (Serial.available()) {
-        char c = Serial.read();
-        if (c == '\n') {
-            processLine(g_serialBuffer);
-            g_serialBuffer = "";
-        } else if (g_serialBuffer.length() < 256) {
-            g_serialBuffer += c;
-        }
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      processLine(g_serialBuffer);
+      g_serialBuffer = "";
+    } else if (g_serialBuffer.length() < 256) {
+      g_serialBuffer += c;
     }
+  }
 }
 
 void setup() {
-    Serial.begin(115200);
-    while (!Serial) delay(10);
+  Serial.begin(115200);
+  while (!Serial) delay(10);
 
-    pinMode(PIN_A, OUTPUT);
-    pinMode(PIN_B, OUTPUT);
-    analogWrite(PIN_A, 0);
-    analogWrite(PIN_B, 0);
+  for (int i = 0; i < numMotors; i++) {
+    pinMode(in1Pins[i], OUTPUT);
+    pinMode(in2Pins[i], OUTPUT);
+    analogWrite(in1Pins[i], 0);
+    analogWrite(in2Pins[i], 0);
+  }
 
-    Serial.println("{\"c\":\"ready\"}");
-    Serial.println("{\"l\":\"single-motor test firmware — GPIO 32/33\"}");
+  Serial.println("{\"c\":\"ready\"}");
 }
 
 void loop() {
-    readSerial();
+  readSerial();
 }
