@@ -47,7 +47,7 @@ static const MotorPins kMotorPins[MOTOR_CHANNEL_COUNT] = {
 
 static void setMotor(int channel, int16_t speed) {
     const MotorPins& p = kMotorPins[channel];
-    int duty = constrain((int)abs(speed), 0, 255);
+    int duty = constrain((int)abs(speed), 0, PWM_MAX);
     if (speed >= 0) {
         analogWrite(p.a, duty);
         analogWrite(p.b, 0);
@@ -58,10 +58,9 @@ static void setMotor(int channel, int16_t speed) {
 }
 
 void setupMotors() {
+    pwmBeginMotors();  // 20 kHz carrier, 10-bit duty (0..1023)
     for (int i = 0; i < MOTOR_CHANNEL_COUNT; i++) {
-        pinMode(kMotorPins[i].a, OUTPUT);
-        pinMode(kMotorPins[i].b, OUTPUT);
-        analogWrite(kMotorPins[i].a, 0);
+        analogWrite(kMotorPins[i].a, 0);  // first write attaches the pin + idles low
         analogWrite(kMotorPins[i].b, 0);
     }
 }

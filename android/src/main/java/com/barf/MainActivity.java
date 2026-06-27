@@ -41,6 +41,7 @@ import com.barf.pairing.WireGuardManager;
 import com.barf.robot.RobotController;
 import com.barf.runtime.JsRuntime;
 import com.barf.runtime.WasmRuntime;
+import com.barf.serial.SerialProtocol;
 import com.barf.serial.UsbSerialManager;
 import com.barf.server.PhoneApiServer;
 
@@ -297,11 +298,37 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
 
             jsRuntime = new JsRuntime();
             jsRuntime.setCallback(new JsRuntime.JsCommandCallback() {
-                @Override public void onMove(String d, float s) { robotController.move(d, s); }
-                @Override public void onRotate(String d, float s) { robotController.rotate(d, s); }
-                @Override public void onRawMotors(int[] speeds) { robotController.setRawSpeeds(speeds); }
+                @Override public void onMove(String d, int pwm) {
+                    AppLog.d(TAG, "JS→onMove: " + d + " " + pwm);
+                    robotController.move(d, pwm);
+                }
+                @Override public void onRotate(String d, int pwm) {
+                    AppLog.d(TAG, "JS→onRotate: " + d + " " + pwm);
+                    robotController.rotate(d, pwm);
+                }
+                @Override public void onRawMotors(int[] speeds) {
+                    AppLog.d(TAG, "JS→onRawMotors: " + java.util.Arrays.toString(speeds));
+                    robotController.setRawSpeeds(speeds);
+                }
+                @Override public void onLiftMotors(int speed) {
+                    AppLog.d(TAG, "JS→onLiftMotors: " + speed);
+                    robotController.setLiftSpeed(speed);
+                }
+                @Override public void onLiftTimed(int speed, int ms) {
+                    AppLog.d(TAG, "JS→onLiftTimed: " + speed + " for " + ms + "ms");
+                    robotController.setLiftSpeedTimed(speed, ms);
+                }
+                @Override public void onEnableAutoStop() {
+                    AppLog.d(TAG, "JS→autoshutdown()");
+                    robotController.enableAutoStop();
+                }
                 @Override public void onStop() {
+                    AppLog.d(TAG, "JS→onStop (motors halt, session continues)");
                     robotController.stop();
+                }
+                @Override public void onScriptEnd() {
+                    AppLog.d(TAG, "JS→onScriptEnd (full cleanup)");
+                    robotController.endSession();
                     if (jsWakeLock != null && jsWakeLock.isHeld()) jsWakeLock.release();
                 }
             });
@@ -312,6 +339,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
             wasmRuntime = new WasmRuntime();
             apiServer.setWasmRuntime(wasmRuntime);
             apiServer.setCallback(this);
+
+            // Broadcast JS logs to desktop over WebSocket
+            final PhoneApiServer srv = apiServer;
+            AppLog.addJsListener(line -> srv.broadcastLog(line, "js"));
 
             // Setup USB-Serial for ESP32 communication
             usbSerialManager = new UsbSerialManager(this);
@@ -461,8 +492,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
     }
 
     // ========== ServerCallback ==========
-    @Override public void onMove(String d, float s) { robotController.move(d, s); }
-    @Override public void onRotate(String d, float s) { robotController.rotate(d, s); }
+    // The desktop control endpoints send a normalized speed (0.0..1.0); RobotController
+    // takes a PWM int (0..MAX_PWM), so scale here. Passing the raw float would both fail
+    // to compile and truncate 0.5 → 0 (robot never moves).
+    @Override public void onMove(String d, float s) { robotController.move(d, speedToPwm(s)); }
+    @Override public void onRotate(String d, float s) { robotController.rotate(d, speedToPwm(s)); }
+
+    /** Convert a normalized 0..1 speed (from the desktop API) to a 0..MAX_PWM PWM value. */
+    private static int speedToPwm(float speed) {
+        int pwm = Math.round(Math.abs(speed) * SerialProtocol.MAX_PWM);
+        return Math.max(0, Math.min(SerialProtocol.MAX_PWM, pwm));
+    }
     @Override public void onSwitchCamera() {
         try { cameraManager.switchCamera(); } catch (Exception e) { AppLog.w(TAG, "switchCamera error: " + e.getMessage()); }
     }

@@ -187,6 +187,17 @@ public class PhoneApiServer extends NanoHTTPD {
         }
     }
 
+    public void broadcastLog(String line, String channel) {
+        if (webSocketServer == null) return;
+        try {
+            JsonObject msg = new JsonObject();
+            msg.addProperty("type", "log");
+            msg.addProperty("channel", channel);
+            msg.addProperty("line", line);
+            webSocketServer.broadcast(msg.toString());
+        } catch (Exception ignored) {}
+    }
+
     /**
      * Broadcast serial data from ESP32 to all WebSocket clients.
      * Called by UsbSerialManager listener.

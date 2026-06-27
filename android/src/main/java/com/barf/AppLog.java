@@ -5,7 +5,9 @@ import android.util.Log;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * In-app logger that mirrors all messages to both Android logcat and an in-app
@@ -17,11 +19,11 @@ public class AppLog {
 
     // System log
     private static final ArrayDeque<String> lines = new ArrayDeque<>();
-    private static volatile Listener listener;
+    private static final List<Listener> listeners = new CopyOnWriteArrayList<>();
 
     // JS-only log
     private static final ArrayDeque<String> jsLines = new ArrayDeque<>();
-    private static volatile Listener jsListener;
+    private static final List<Listener> jsListeners = new CopyOnWriteArrayList<>();
 
     private static final SimpleDateFormat fmt =
             new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -31,21 +33,31 @@ public class AppLog {
     }
 
     public static void setListener(Listener l) {
-        listener = l;
+        listeners.clear();
         if (l != null) {
+            listeners.add(l);
             synchronized (AppLog.class) {
                 for (String line : lines) l.onNewLine(line);
             }
         }
     }
 
+    public static void addListener(Listener l) {
+        if (l != null) listeners.add(l);
+    }
+
     public static void setJsListener(Listener l) {
-        jsListener = l;
+        jsListeners.clear();
         if (l != null) {
+            jsListeners.add(l);
             synchronized (AppLog.class) {
                 for (String line : jsLines) l.onNewLine(line);
             }
         }
+    }
+
+    public static void addJsListener(Listener l) {
+        if (l != null) jsListeners.add(l);
     }
 
     public static void i(String tag, String msg) { log("I", tag, msg); Log.i(tag, msg); }
@@ -60,8 +72,7 @@ public class AppLog {
             if (jsLines.size() >= MAX_LINES) jsLines.pollFirst();
             jsLines.addLast(line);
         }
-        Listener l = jsListener;
-        if (l != null) l.onNewLine(line);
+        for (Listener l : jsListeners) l.onNewLine(line);
         Log.d(tag, "[JS] " + msg);
     }
 
@@ -69,8 +80,7 @@ public class AppLog {
         String line = fmt.format(new Date()) + " " + level + "/" + tag + ": " + msg;
         if (lines.size() >= MAX_LINES) lines.pollFirst();
         lines.addLast(line);
-        Listener l = listener;
-        if (l != null) l.onNewLine(line);
+        for (Listener l : listeners) l.onNewLine(line);
     }
 
     public static synchronized void clear() {

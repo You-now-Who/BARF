@@ -48,6 +48,7 @@ tools/metal-balls-3/
 tools/runs/
 tools/yolo11n.pt
 tools/yolo11n_balls*
+tools/yolo11n.ncnn.*
 
 # PlatformIO firmware project (separate workflow, not ready to track)
 sdk/firmware_platformio/

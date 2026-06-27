@@ -45,44 +45,132 @@ def run(cmd, cwd=None):
 
 
 def patch_pnnx_script(path: Path):
-    """Patch the pnnx-generated Python script for dynamic input shapes."""
+    """
+    Patch the pnnx-generated Python script for dynamic input shapes.
+
+    Target output format (per the ncnn yolo11_det.cpp contract):
+        out0 = [N_grids, 64 + nc]   — each row is one grid cell with
+                                       64 raw DFL box-reg values followed
+                                       by nc raw class logits (pre-sigmoid).
+        N_grids = sum of (H/s * W/s) for strides [8, 16, 32]
+                  e.g. 8400 at 640px, 2100 at 320px.
+    """
+    import re
+
     lines = path.read_text().splitlines(keepends=True)
-    out = []
+
+    # ── Pre-scan: find key variable names ──────────────────────────────────
+    # 1. Attention spatial-reference tensor: the second output of the 128,128
+    #    channel split that feeds the C2PSA block.  Its shape is [1,128,H,W]
+    #    and we need it to reconstruct H/W for dynamic attention reshapes.
+    spatial_ref = "v_93"  # sensible default for yolo11n at 640 px export
     for line in lines:
-        # Dynamic Area Attention reshape
-        if "v_96 = v_95.view(1, 2, 128, 1024)" in line:
-            line = line.replace("1024", "-1")
-        if "v_106 = v_105.view(1, 128, 32, 32)" in line:
-            line = "        v_106 = v_105.view(1, 128, v_95.size(2), v_95.size(3))\n"
-        if "v_107 = v_99.reshape(1, 128, 32, 32)" in line:
-            line = "        v_107 = v_99.reshape(1, 128, v_95.size(2), v_95.size(3))\n"
+        m = re.match(
+            r"\s+(v_\w+),\s*(v_\w+)\s*=\s*torch\.split\("
+            r".*split_size_or_sections=\(128,\s*128\)",
+            line,
+        )
+        if m:
+            spatial_ref = m.group(2)
+            break
 
-        # Dynamic reshape for detection head
-        if ".view(1, " in line and any(
-            x in line for x in ["6400", "1600", "400", "16384", "4096", "1024"]
-        ):
+    # 2. Detection-head cat variables: the two torch.cat calls that use
+    #    dim=-1 are always (in this architecture) the DFL box-reg cat and
+    #    the class-score cat respectively.
+    dfl_cat_var = None
+    cls_cat_var = None
+    for line in lines:
+        if "torch.cat" in line and "dim=-1" in line:
+            m = re.match(r"\s+(v_\w+)\s*=\s*torch\.cat\(", line)
+            if m:
+                if dfl_cat_var is None:
+                    dfl_cat_var = m.group(1)
+                else:
+                    cls_cat_var = m.group(1)
+
+    # ── Line-by-line patching ───────────────────────────────────────────────
+    out = []
+    skip_postprocess = False   # True once we hit the anchor-decoding block
+
+    for line in lines:
+
+        # Rule A — C2PSA attention QKV reshape: (1, 2, 128, N) → (1, 2, 128, -1)
+        # Handles both .view() (original COCO model) and .reshape() (fine-tuned).
+        line = re.sub(
+            r"(\.(?:view|reshape)\(1,\s*2,\s*128,\s*)\d+(\))",
+            r"\g<1>-1\2",
+            line,
+        )
+
+        # Rule B — C2PSA attention output reshape: (1, 128, H, W) → dynamic via spatial_ref.
+        # Matches any 8-space-indented "v_X = v_Y.reshape(1, 128, <int>, <int>)".
+        m = re.match(
+            r"(        )(v_\w+)(\s*=\s*)(v_\w+)"
+            r"\.(?:view|reshape)\(1,\s*128,\s*\d+,\s*\d+\)(.*)",
+            line,
+        )
+        if m:
             line = (
-                line.replace("6400", "-1")
-                .replace("1600", "-1")
-                .replace("400", "-1")
-                .replace("16384", "-1")
-                .replace("4096", "-1")
-                .replace("1024", "-1")
+                f"{m.group(1)}{m.group(2)}{m.group(3)}{m.group(4)}"
+                f".reshape(1, 128, {spatial_ref}.size(2), {spatial_ref}.size(3))"
+                f"{m.group(5)}\n"
             )
-            line = line.rstrip() + ".transpose(1, 2)\n"
 
-        # Fix cat axis after transpose
-        if "torch.cat" in line and "dim=2" in line:
-            line = line.replace("dim=2", "dim=1")
+        # Rule C — DFL box-reg per-stride reshape: (1, 64, N) → (1, 64, -1).
+        # These are the three reshape calls that flatten each stride's spatial map.
+        line = re.sub(
+            r"(\.(?:view|reshape)\(1,\s*64,\s*)\d+(\))",
+            r"\g<1>-1\2",
+            line,
+        )
 
-        # Return raw detections from Model.forward() (8-space indent = class method body)
-        if line.startswith("        return") and "v_" in line:
-            line = "        return v_238\n"
+        # Rule D — Class-score per-stride reshape: (1, nc, N) → (1, nc, -1)
+        # where nc is small (model's num_classes, not 64 or 128) and N > 100.
+        m_d = re.search(r"\.(?:view|reshape)\(1,\s*(\d+),\s*(\d+)\)", line)
+        if m_d:
+            nc, n_s = int(m_d.group(1)), int(m_d.group(2))
+            if nc not in (64, 128) and 1 <= nc <= 100 and n_s > 100:
+                line = re.sub(
+                    r"(\.(?:view|reshape)\(1,\s*" + str(nc) + r",\s*)\d+(\))",
+                    r"\g<1>-1\2",
+                    line,
+                )
+
+        # Skip post-processing (anchor decoding with fixed 640 px anchor grid).
+        # Triggered by the first reshape of the concatenated DFL tensor into
+        # (1, 4, 16, N) for the DFL soft-max decoding step.
+        if dfl_cat_var and cls_cat_var:
+            if re.search(
+                rf"=\s*{re.escape(dfl_cat_var)}\.(?:view|reshape)\(1,\s*4,\s*16,",
+                line,
+            ):
+                skip_postprocess = True
+
+        if skip_postprocess:
+            # The original "return" statement in Model.forward() is where we
+            # inject the correct combined output tensor.
+            if line.startswith("        return") and "v_" in line:
+                skip_postprocess = False
+                # Output: [N_grids, 64+nc]  (matches ncnn yolo11_det.cpp expectations)
+                # v_207 = [1, 64, N_grids], v_238 = [1, nc, N_grids]
+                # → transpose each to [1, N_grids, C] → cat on last dim → squeeze batch
+                line = (
+                    f"        return torch.cat(\n"
+                    f"            ({dfl_cat_var}.transpose(1, 2), {cls_cat_var}.transpose(1, 2)),\n"
+                    f"            dim=2,\n"
+                    f"        ).squeeze(0)\n"
+                )
+                out.append(line)
+            # Drop all other post-processing lines
+            continue
 
         out.append(line)
 
     path.write_text("".join(out))
-    print(f"  Patched {path.name}")
+    print(
+        f"  Patched {path.name}  "
+        f"[spatial_ref={spatial_ref}, dfl_cat={dfl_cat_var}, cls_cat={cls_cat_var}]"
+    )
 
 
 def main():
@@ -97,8 +185,10 @@ def main():
     work_dir = out_dir
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n=== Step 1: Export {weights.name} → TorchScript ===")
-    run(f"yolo export model={weights} format=torchscript", cwd=work_dir)
+    print(f"\n=== Step 1: Export {weights.name} → TorchScript (imgsz=640) ===")
+    # Always export at 640 regardless of training imgsz — the phone inference
+    # uses 320 or 640 at runtime; dynamic-shape NCNN requires a 640-traced base.
+    run(f"yolo export model={weights} format=torchscript imgsz=640", cwd=work_dir)
     ts_src = weights.with_suffix(".torchscript")
     ts_dst = work_dir / f"{name}.torchscript"
     shutil.copy2(ts_src, ts_dst)

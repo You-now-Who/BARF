@@ -3,6 +3,7 @@ package com.barf.runtime;
 import android.util.Log;
 
 import com.barf.AppLog;
+import com.barf.serial.SerialProtocol;
 
 import org.mozilla.javascript.Context;
 import org.mozilla.javascript.Function;
@@ -36,10 +37,16 @@ public class JsRuntime {
     private Runnable startListener;
 
     public interface JsCommandCallback {
-        void onMove(String direction, float speed);
-        void onRotate(String direction, float speed);
+        void onMove(String direction, int pwm);
+        void onRotate(String direction, int pwm);
+        /** JS called stop() — halt motors, but keep session alive (don't reset autoshutdown). */
         void onStop();
+        /** Script thread fully exited — do full cleanup (reset autoshutdown, release wake lock). */
+        void onScriptEnd();
         void onRawMotors(int[] speeds);
+        void onLiftMotors(int speed);
+        void onLiftTimed(int speed, int ms);
+        void onEnableAutoStop();
     }
 
     public void setCallback(JsCommandCallback callback) {
@@ -85,7 +92,7 @@ public class JsRuntime {
                 Log.e(TAG, "Script execution error", e);
             } finally {
                 running.set(false);
-                if (callback != null) callback.onStop();
+                if (callback != null) callback.onScriptEnd();
             }
         });
         executionThread.start();
@@ -109,7 +116,7 @@ public class JsRuntime {
             } catch (Exception ignored) {}
         }
 
-        if (callback != null) callback.onStop();
+        if (callback != null) callback.onScriptEnd();
         appendOutput("Script stopped by user");
     }
 
@@ -211,7 +218,15 @@ public class JsRuntime {
             "var LEFT = 'left';\n" +
             "var RIGHT = 'right';\n" +
             "var console = { log: function(msg) { robot.log(msg); } };\n" +
-            "function rawMotors(arr) { robot.rawMotors(arr); }\n";
+            "function rawMotors(arr) { robot.rawMotors(arr); }\n" +
+            "function liftMotors(speed) { robot.liftMotors(speed); }\n" +
+            "function liftMoveUp(speed, ms) {\n" +
+            "  robot.liftTimed(-Math.abs(speed), ms || 0);\n" +
+            "}\n" +
+            "function liftMoveDown(speed, ms) {\n" +
+            "  robot.liftTimed(Math.abs(speed), ms || 0);\n" +
+            "}\n" +
+            "function autoshutdown() { robot.enableAutoStop(); }\n";
 
         cx.evaluateString(scope, helpers, "helpers", 1, null);
 
@@ -227,24 +242,26 @@ public class JsRuntime {
     }
 
     public class JsApi {
-        public void move(String direction, Object speedObj) {
+        public void move(String direction, Object pwmObj) {
             checkRunning();
-            float s = toSpeed(speedObj, 0.5f);
-            appendOutput("move('" + direction + "', " + s + ")");
-            if (callback != null) callback.onMove(direction, s);
+            int pwm = toPwm(pwmObj, 512);
+            appendOutput("move('" + direction + "', " + pwm + ")");
+            if (callback != null) callback.onMove(direction, pwm);
         }
 
-        public void rotate(String direction, Object speedObj) {
+        public void rotate(String direction, Object pwmObj) {
             checkRunning();
-            float s = toSpeed(speedObj, 0.35f);
-            appendOutput("rotate('" + direction + "', " + s + ")");
-            if (callback != null) callback.onRotate(direction, s);
+            int pwm = toPwm(pwmObj, 360);
+            appendOutput("rotate('" + direction + "', " + pwm + ")");
+            if (callback != null) callback.onRotate(direction, pwm);
         }
 
-        private float toSpeed(Object v, float def) {
+        private int toPwm(Object v, int def) {
             if (v == null || v instanceof org.mozilla.javascript.Undefined) return def;
-            if (v instanceof Number) return Math.max(0f, Math.min(1f, ((Number) v).floatValue()));
-            try { return Math.max(0f, Math.min(1f, Float.parseFloat(v.toString()))); } catch (Exception e) { return def; }
+            int raw = 0;
+            if (v instanceof Number) raw = ((Number) v).intValue();
+            else { try { raw = Integer.parseInt(v.toString()); } catch (Exception e) { return def; } }
+            return Math.max(0, Math.min(SerialProtocol.MAX_PWM, raw));
         }
 
         public void stop() {
@@ -252,11 +269,35 @@ public class JsRuntime {
             if (callback != null) callback.onStop();
         }
 
+        /** Enable auto-stop: motors cut automatically ~150ms after the last move/rotate call. */
+        @SuppressWarnings("unused")
+        public void enableAutoStop() {
+            if (callback != null) callback.onEnableAutoStop();
+        }
+
         /**
          * Send raw per-motor values directly, bypassing the mixing formula.
-         * Use this to identify motor wiring: rawMotors([255,0,0,0,0,0]) spins motor 0 only.
-         * Indices: [FL, FR, LIFT, BL, BR, LIFT]. Range -255..255.
+         * Use this to identify motor wiring: rawMotors([1023,0,0,0,0,0]) spins motor 0 only.
+         * Indices: [FL, BL, LIFT1, FR, BR, LIFT2]. Range -1023..1023.
          */
+        @SuppressWarnings("unused")
+        public void liftMotors(Object speedObj) {
+            checkRunning();
+            int speed = 0;
+            if (speedObj instanceof Number) speed = Math.max(-SerialProtocol.MAX_PWM, Math.min(SerialProtocol.MAX_PWM, ((Number) speedObj).intValue()));
+            appendOutput("liftMotors(" + speed + ")");
+            if (callback != null) callback.onLiftMotors(speed);
+        }
+
+        @SuppressWarnings("unused")
+        public void liftTimed(Object speedObj, Object msObj) {
+            checkRunning();
+            int speed = 0, ms = 0;
+            if (speedObj instanceof Number) speed = Math.max(-SerialProtocol.MAX_PWM, Math.min(SerialProtocol.MAX_PWM, ((Number) speedObj).intValue()));
+            if (msObj instanceof Number) ms = Math.max(0, ((Number) msObj).intValue());
+            if (callback != null) callback.onLiftTimed(speed, ms);
+        }
+
         @SuppressWarnings("unused")
         public void rawMotors(Object arr) {
             if (callback == null) return;
@@ -266,7 +307,7 @@ public class JsRuntime {
                     org.mozilla.javascript.NativeArray na = (org.mozilla.javascript.NativeArray) arr;
                     for (int i = 0; i < Math.min(6, (int) na.getLength()); i++) {
                         Object v = na.get(i, na);
-                        speeds[i] = (v instanceof Number) ? Math.max(-255, Math.min(255, ((Number) v).intValue())) : 0;
+                        speeds[i] = (v instanceof Number) ? Math.max(-SerialProtocol.MAX_PWM, Math.min(SerialProtocol.MAX_PWM, ((Number) v).intValue())) : 0;
                     }
                 }
             } catch (Exception e) {

@@ -1,32 +1,66 @@
 import { useState } from "react";
 import Editor from "@monaco-editor/react";
 
-const DEFAULT_FIRMWARE = `#include "robot_firmware.h"
+const DEFAULT_FIRMWARE = `#include <Arduino.h>
+#include <ArduinoJson.h>
 
-// Motor pins for 4-wheel drive
-const int MOTOR_FL_PWM = 32;
-const int MOTOR_FR_PWM = 33;
-const int MOTOR_BL_PWM = 25;
-const int MOTOR_BR_PWM = 26;
+// BARF ESP32 firmware — 6 motors on DRV8833 dual H-bridges.
+// Each motor uses TWO pins (A/B): forward = PWM on A, B low; reverse = swap.
+// Wire format from the phone: {"m":[FL,BL,LIFT1,FR,BR,LIFT2]}, each -1023..1023.
+
+const int NUM_MOTORS = 6;
+const int pinA[NUM_MOTORS] = {32, 25, 27, 16, 18, 21};
+const int pinB[NUM_MOTORS] = {33, 26, 14, 17, 19, 22};
+
+const int PWM_FREQ_HZ  = 20000;   // 20 kHz carrier (above audible)
+const int PWM_RES_BITS = 10;      // 10-bit duty resolution
+const int PWM_MAX      = 1023;    // (1 << PWM_RES_BITS) - 1
+
+const unsigned long MOTOR_TIMEOUT_MS = 300;  // stop if no command arrives
+unsigned long lastCmdMs = 0;
+String lineBuf;
+
+void setMotor(int i, int speed) {
+  int chA = i * 2, chB = i * 2 + 1;
+  int duty = constrain(abs(speed), 0, PWM_MAX);
+  ledcWrite(chA, speed > 0 ? duty : 0);
+  ledcWrite(chB, speed < 0 ? duty : 0);
+}
 
 void setup() {
-    Serial.begin(115200);
-    ledcSetup(0, 5000, 8);
-    ledcSetup(1, 5000, 8);
-    ledcSetup(2, 5000, 8);
-    ledcSetup(3, 5000, 8);
-    ledcAttachPin(MOTOR_FL_PWM, 0);
-    ledcAttachPin(MOTOR_FR_PWM, 1);
-    ledcAttachPin(MOTOR_BL_PWM, 2);
-    ledcAttachPin(MOTOR_BR_PWM, 3);
+  Serial.begin(115200);
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    int chA = i * 2, chB = i * 2 + 1;
+    ledcSetup(chA, PWM_FREQ_HZ, PWM_RES_BITS);   // 20 kHz, 10-bit (0..1023)
+    ledcSetup(chB, PWM_FREQ_HZ, PWM_RES_BITS);
+    ledcAttachPin(pinA[i], chA);
+    ledcAttachPin(pinB[i], chB);
+  }
+  Serial.println("{\\"c\\":\\"ready\\"}");
 }
 
 void loop() {
-    // Handle incoming JSON motor commands
-    if (Serial.available()) {
-        String line = Serial.readStringUntil('\n');
-        // Parse {"m":[fl,fr,bl,br]} and set PWMs
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\\n') {
+      StaticJsonDocument<256> doc;
+      if (!deserializeJson(doc, lineBuf) && doc.containsKey("m")) {
+        JsonArray m = doc["m"].as<JsonArray>();
+        for (int i = 0; i < NUM_MOTORS && i < (int)m.size(); i++)
+          setMotor(i, constrain((int)m[i], -PWM_MAX, PWM_MAX));
+        lastCmdMs = millis();
+      }
+      lineBuf = "";
+    } else if (lineBuf.length() < 256) {
+      lineBuf += c;
     }
+  }
+
+  // Safety: cut motors if the phone stops sending commands.
+  if (lastCmdMs && millis() - lastCmdMs > MOTOR_TIMEOUT_MS) {
+    lastCmdMs = 0;
+    for (int i = 0; i < NUM_MOTORS; i++) setMotor(i, 0);
+  }
 }
 `;
 

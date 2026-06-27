@@ -63,13 +63,13 @@ void processLine(const String& line) {
         return;
     }
 
-    // ── Motor command: {"m":[255,0,-128,0,0,0]} ──────
+    // ── Motor command: {"m":[1023,0,-512,0,0,0]} ─────
     if (doc.containsKey("m")) {
         JsonArray arr = doc["m"].as<JsonArray>();
         int n = min((int)arr.size(), MOTOR_CHANNEL_COUNT);
         for (int i = 0; i < n; i++) {
             int raw = arr[i];
-            g_motors.speeds[i] = constrain(raw, -255, 255);
+            g_motors.speeds[i] = constrain(raw, -PWM_MAX, PWM_MAX);
         }
         for (int i = n; i < MOTOR_CHANNEL_COUNT; i++) {
             g_motors.speeds[i] = 0;

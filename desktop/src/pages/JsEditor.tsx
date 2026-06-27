@@ -1,44 +1,147 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
 import Editor from "@monaco-editor/react";
 
+// Fine-tuned model (2-class): 0=ping_pong_ball, 1=metal_ball
+// Falls back to COCO names for old/COCO models
 const COCO_LABELS: Record<number, string> = {
-  0: "person", 1: "bicycle", 2: "car", 14: "bird", 15: "cat", 16: "dog",
+  0: "ping_pong_ball", 1: "metal_ball",
+  14: "bird", 15: "cat", 16: "dog",
   32: "sports ball", 39: "bottle", 46: "banana", 47: "apple",
   49: "orange", 50: "broccoli", 56: "chair", 63: "laptop", 67: "cell phone",
   73: "book",
 };
 
-const DEFAULT_JS = `// BARF JS Vision Script
-// onDetection(fn)  — called every camera frame (~30fps)
-// move(dir, speed) — "forward" | "backward" | "left" | "right", speed 0–1
-// rotate(dir, speed) — "left" | "right", speed 0–1
-// stop()           — halt motors immediately
-// sleep(ms)        — pause (blocks script thread)
-// log(msg)         — prints to Android logcat
+const DEFAULT_JS = `// BARF — Ball chaser with lift
+// States: SEARCH → STEER → CENTRING → CHARGE
+// Lift is fully async — navigation never pauses waiting for it.
 
-var ORANGE = 49; // COCO class index — see comment below for full list
-// 0=person  32=sports ball  39=bottle  46=banana
-// 47=apple  49=orange  50=broccoli  67=cell phone
+var BALL         = 0;    // fine-tuned: ping_pong_ball
+var FRAME_W      = 640;
+var DEAD_ZONE    = 30;
+var CAM_OFFSET_X = 0;
+var CAM_ANGLE    = 0;
+
+var SEARCH_SPEED = 360;  // PWM 0-1023
+var STEER_MIN    = 160;
+var STEER_MAX    = 800;
+var DRIVE_FAR    = 720;
+var DRIVE_CLOSE  = 360;
+var MIN_W        = 30;
+var CLOSE_W      = 150;
+var STOP_W       = 300;
+var COAST_MS     = 500;
+
+var LOCK_FRAMES  = 3;
+var CHARGE_SPEED = 920;
+var CHARGE_MS    = 800;
+
+autoshutdown();
+
+// ── Lift position tracker (0=ground, 1=half, 2=full) ──────────────────────
+var liftPosition = 0;
+
+function liftSetHalf() {
+  if (liftPosition == 2) { liftMoveDown(480, 350); }
+  else if (liftPosition == 0) { liftMoveUp(480, 500); }
+  liftPosition = 1;
+}
+
+function liftSetFull() {
+  if (liftPosition == 1) { liftMoveDown(480, 500); }
+  else if (liftPosition == 0) { liftMoveUp(480, 1000); }
+  liftPosition = 2;
+}
+
+function liftSetGround() {
+  if (liftPosition == 2) { liftMoveDown(480, 700); }
+  else if (liftPosition == 1) { liftMoveDown(480, 350); }
+  liftPosition = 0;
+}
+
+var _wantedLift = -1;
+function goLift(pos) {
+  if (_wantedLift === pos) return;
+  _wantedLift = pos;
+  if (pos === 0) liftSetGround();
+  else if (pos === 1) liftSetHalf();
+  else if (pos === 2) liftSetFull();
+}
+
+// ── Navigation state ──────────────────────────────────────────────────────
+var lastSeenMs    = 0;
+var centredFrames = 0;
+var charging      = false;
+var chargeEnd     = 0;
 
 onDetection(function(frame) {
-  var dets = frame.yolo || [];
+  var now = new Date().getTime();
 
+  // CHARGE: drive blind, lift at ground
+  if (charging) {
+    if (now < chargeEnd) {
+      goLift(0);
+      move("forward", CHARGE_SPEED);
+      return;
+    }
+    // Charge done — immediately back to search, lift rises in background
+    charging = false;
+    centredFrames = 0;
+    goLift(1);
+  }
+
+  var dets = frame.yolo || [];
+  var best = null;
   for (var i = 0; i < dets.length; i++) {
     var d = dets[i];
-    if (d.label === ORANGE && d.score > 0.6) {
-      // Steer toward it: frame is 1280px wide, center ~640
-      if (d.x < 560) {
-        rotate("left", 0.35);
-      } else if (d.x > 720) {
-        rotate("right", 0.35);
-      } else {
-        move("forward", 0.5); // roughly centered — charge
-      }
-      return;
+    if (d.label === BALL && d.score > 0.3) {
+      if (best === null || d.score > best.score) best = d;
     }
   }
 
-  stop(); // nothing found
+  // SEARCH: no ball — lift half, rotate
+  if (!best) {
+    centredFrames = 0;
+    goLift(1);
+    if (now - lastSeenMs < COAST_MS) {
+      move("forward", DRIVE_CLOSE);
+    } else {
+      rotate("right", SEARCH_SPEED);
+    }
+    return;
+  }
+
+  lastSeenMs = now;
+  var aimX = FRAME_W / 2 + CAM_OFFSET_X;
+  var cx   = best.x + best.w / 2;
+  var dx   = cx - aimX;
+
+  if (Math.abs(dx) > DEAD_ZONE) {
+    // STEER: lift half while steering
+    centredFrames = 0;
+    goLift(1);
+    var steer = Math.round(Math.min(STEER_MAX, Math.max(STEER_MIN, Math.abs(dx) / (FRAME_W / 2) * STEER_MAX)));
+    rotate(dx < 0 ? "left" : "right", steer);
+  } else {
+    centredFrames++;
+    if (centredFrames >= LOCK_FRAMES) {
+      // LOCKED: drop lift, charge
+      charging  = true;
+      chargeEnd = now + CHARGE_MS;
+      centredFrames = 0;
+      goLift(0);
+      move("forward", CHARGE_SPEED);
+    } else {
+      // CENTRING: lift half, creep forward
+      goLift(1);
+      if (best.w < MIN_W || best.w > STOP_W) {
+        stop();
+      } else if (best.w > CLOSE_W) {
+        move("forward", DRIVE_CLOSE);
+      } else {
+        move("forward", DRIVE_FAR);
+      }
+    }
+  }
 });
 `;
 
@@ -47,7 +150,7 @@ function labelName(id: number) {
 }
 
 export default function JsEditor() {
-  const [script, setScript] = useState(DEFAULT_JS);
+  const [script, setScript] = useState(() => localStorage.getItem("barf_js_script") ?? DEFAULT_JS);
   const [phoneIp, setPhoneIp] = useState(() => localStorage.getItem("barf_phone_ip") ?? "");
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<string[]>(["Ready."]);
@@ -55,11 +158,31 @@ export default function JsEditor() {
   const wsRef = useRef<WebSocket | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Persist phoneIp
+  const camOffset = useMemo(() => {
+    const m = script.match(/CAM_OFFSET_X\s*=\s*(-?\d+)/);
+    return m ? parseInt(m[1]) : 0;
+  }, [script]);
+
+  const deadZone = useMemo(() => {
+    const m = script.match(/DEAD_ZONE\s*=\s*(-?\d+)/);
+    return m ? parseInt(m[1]) : 30;
+  }, [script]);
+
+  const camAngle = useMemo(() => {
+    const m = script.match(/CAM_ANGLE\s*=\s*(-?[\d.]+)/);
+    return m ? parseFloat(m[1]) : 0;
+  }, [script]);
+
+  // Persist phoneIp and script
   useEffect(() => {
     if (phoneIp) localStorage.setItem("barf_phone_ip", phoneIp);
   }, [phoneIp]);
+
+  useEffect(() => {
+    localStorage.setItem("barf_js_script", script);
+  }, [script]);
 
   // WebSocket for live detection feed
   useEffect(() => {
@@ -79,6 +202,8 @@ export default function JsEditor() {
             ? JSON.parse(msg.detections)
             : msg.detections;
           setLastFrame(parsed);
+        } else if (msg.type === "log" && msg.channel === "js") {
+          addLog(msg.line);
         }
       } catch {}
     };
@@ -105,6 +230,78 @@ export default function JsEditor() {
   useEffect(() => {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
   }, [log]);
+
+  // Draw aim overlay on canvas
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const CW = canvas.width;
+    const CH = canvas.height;
+    const FW = 640, FH = 480;
+    const sx = CW / FW, sy = CH / FH;
+
+    ctx.clearRect(0, 0, CW, CH);
+    ctx.fillStyle = "#0a0a0f";
+    ctx.fillRect(0, 0, CW, CH);
+
+    const aimX = (FW / 2 + camOffset) * sx;
+    const dz = deadZone * sx;
+    const rad = camAngle * Math.PI / 180;
+    // Half-diagonal guarantees the rotated line always reaches canvas edges
+    const halfLen = Math.sqrt(CW * CW + CH * CH) / 2;
+    const ldx = Math.sin(rad) * halfLen;
+    const ldy = Math.cos(rad) * halfLen;
+    const cy = CH / 2;
+
+    // Dead zone band — negate rad because canvas rotate() maps local y to (-sin,cos)
+    // but the line goes in direction (+sin,cos), so they'd mirror without the negation.
+    ctx.fillStyle = "rgba(34,197,94,0.07)";
+    ctx.save();
+    ctx.translate(aimX, cy);
+    ctx.rotate(-rad);
+    ctx.fillRect(-dz, -halfLen, dz * 2, halfLen * 2);
+    ctx.restore();
+
+    // Detection boxes
+    const yolo: any[] = lastFrame?.yolo ?? [];
+    for (const d of yolo) {
+      const color = d.label === 0 ? "#f97316" : "#a78bfa";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(d.x * sx, d.y * sy, d.w * sx, d.h * sy);
+      // Ball center dot
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc((d.x + d.w / 2) * sx, (d.y + d.h / 2) * sy, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // True frame centre (white, faint)
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 6]);
+    ctx.beginPath(); ctx.moveTo(CW / 2, 0); ctx.lineTo(CW / 2, CH); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Aim line (green, solid, rotated)
+    ctx.strokeStyle = "#22c55e";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(aimX - ldx, cy - ldy);
+    ctx.lineTo(aimX + ldx, cy + ldy);
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = "#22c55e";
+    ctx.font = "bold 10px monospace";
+    ctx.fillText(
+      `aim ${camOffset >= 0 ? "+" : ""}${camOffset}px  ${camAngle >= 0 ? "+" : ""}${camAngle}°`,
+      aimX + 6, 14,
+    );
+  }, [lastFrame, camOffset, deadZone, camAngle]);
 
   function addLog(line: string) {
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -194,8 +391,24 @@ export default function JsEditor() {
           />
         </div>
 
-        {/* Right panel: live detections + log */}
+        {/* Right panel: aim overlay + live detections + log */}
         <div className="flex flex-col gap-4 w-72 shrink-0">
+          {/* Aim overlay canvas */}
+          <article className="rounded-xl border border-[#22242b] overflow-hidden bg-[#0a0a0f]">
+            <div className="text-xs font-semibold tracking-wide px-3 pt-2 pb-1 text-zinc-400">
+              AIM OVERLAY
+              <span className="ml-2 text-green-400">── aim</span>
+              <span className="ml-2 text-zinc-500">── centre</span>
+              <span className="ml-2 text-zinc-600">(CAM_OFFSET_X / CAM_ANGLE)</span>
+            </div>
+            <canvas
+              ref={canvasRef}
+              width={288}
+              height={216}
+              className="w-full block"
+            />
+          </article>
+
           {/* Live detections */}
           <article className="rounded-xl border border-[#22242b] bg-[linear-gradient(160deg,#131419_0%,#0f1014_100%)] p-3 text-zinc-100 shadow-[0_16px_40px_rgba(0,0,0,0.28)]">
             <div className="text-xs font-semibold tracking-wide mb-2 text-zinc-400">LIVE DETECTIONS</div>

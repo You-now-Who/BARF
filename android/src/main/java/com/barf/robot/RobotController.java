@@ -1,136 +1,174 @@
 package com.barf.robot;
 
-import android.util.Log;
-
+import com.barf.AppLog;
 import com.barf.serial.UsbSerialManager;
 import com.barf.serial.SerialProtocol;
 
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Controls robot movement via USB-serial to ESP32.
- *
- * Motor commands are sent at a fixed 20 Hz rate from a dedicated loop thread.
- * Callers just update the desired motor state — commands never queue up in the
- * serial buffer, so stop() takes effect within one tick (~50 ms) even if the
- * JS script was flooding move() at camera frame rate.
- */
 public class RobotController {
     private static final String TAG = "RobotController";
-    private static final int ROBOT_UDP_PORT = 4210;
-    private static final int MOTOR_HZ = 20;
 
-    private volatile boolean isMoving = false;
-    private volatile String lastCommand = "none";
-    private volatile int robotX = 0;
-    private volatile int robotY = 0;
-    private volatile int robotR = 0;
-
-    // Latest desired motor speeds — written by callers, read by loop thread.
-    private volatile int[] latestMotorSpeeds = new int[]{0, 0, 0, 0, 0, 0};
-
-    private final ScheduledExecutorService motorLoop =
+    // Fixed-rate sender: one thread owns all serial writes at 20 Hz.
+    // JS commands only update latestMotorSpeeds; the sender picks up whatever
+    // the latest state is at each tick. Queue depth is always 0.
+    private static final long SEND_INTERVAL_MS = 50;
+    private final ScheduledExecutorService senderExecutor =
         Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "motor-loop");
+            Thread t = new Thread(r, "motor-sender");
             t.setDaemon(true);
             return t;
         });
 
-    private DatagramSocket udpSocket;
-    private String robotIp = "192.168.1.100";
+    // Auto-stop: opt-in via autoshutdown() in JS.
+    private static final long AUTO_STOP_MS = 150;
+    private volatile boolean autoStopEnabled = false;
+    private final ScheduledExecutorService autoStopExecutor =
+        Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "auto-stop");
+            t.setDaemon(true);  
+            return t;
+        });
+    private volatile ScheduledFuture<?> pendingAutoStop;
+
+    private volatile int[] latestMotorSpeeds = new int[]{0, 0, 0, 0, 0, 0};
+    private volatile ScheduledFuture<?> pendingLiftStop;
+    private volatile int liftSpeed = 0;
+    private volatile boolean isMoving = false;
+    private volatile String lastCommand = "none";
     private UsbSerialManager usbSerial;
 
     public RobotController() {
-        initializeUdpSocket();
-        motorLoop.scheduleAtFixedRate(this::flushMotorCommand, 0, 1000 / MOTOR_HZ, TimeUnit.MILLISECONDS);
+        senderExecutor.scheduleAtFixedRate(this::sendCurrentState,
+            SEND_INTERVAL_MS, SEND_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        AppLog.i(TAG, "RobotController created — sender running at " + (1000 / SEND_INTERVAL_MS) + " Hz");
     }
 
-    /** Called at MOTOR_HZ — sends current desired state to ESP32. */
-    private void flushMotorCommand() {
-        if (usbSerial != null && usbSerial.isConnected()) {
-            String msg = SerialProtocol.motorCommand(latestMotorSpeeds);
-            usbSerial.write(msg);
-        }
-    }
-
-    private void initializeUdpSocket() {
+    private void sendCurrentState() {
         try {
-            if (udpSocket != null && !udpSocket.isClosed()) udpSocket.close();
-            udpSocket = new DatagramSocket();
+            if (usbSerial == null || !usbSerial.isConnected()) return;
+            usbSerial.write(SerialProtocol.motorCommand(latestMotorSpeeds));
         } catch (Exception e) {
-            Log.e(TAG, "Failed to initialize UDP socket: " + e.getMessage());
+            AppLog.e(TAG, "Sender: " + e.getMessage());
         }
     }
 
-    public void setUsbSerial(UsbSerialManager usbSerial) {
-        this.usbSerial = usbSerial;
+    public void setUsbSerial(UsbSerialManager usb) {
+        this.usbSerial = usb;
+        AppLog.i(TAG, "USB serial wired into RobotController");
     }
 
-    public void setRobotIp(String ip) { this.robotIp = ip; }
-    public String getRobotIp() { return robotIp; }
+    public void enableAutoStop() {
+        autoStopEnabled = true;
+        AppLog.i(TAG, "Auto-stop enabled (" + AUTO_STOP_MS + " ms)");
+    }
 
-    public void move(String direction, float speed) {
-        Log.i(TAG, "move: " + direction + " speed=" + speed);
-        isMoving = true;
-        lastCommand = "move:" + direction + ":" + speed;
-
-        int ms = (int) (speed * 255);
+    public void move(String direction, int pwm) {
         int x = 0, y = 0;
-
         switch (direction.toLowerCase()) {
-            case "forward":  y = -ms; break;
-            case "backward": y =  ms; break;
-            case "left":     x = -ms; break;
-            case "right":    x =  ms; break;
+            case "forward":  y = -pwm; break;
+            case "backward": y =  pwm; break;
+            case "left":     x = -pwm; break;
+            case "right":    x =  pwm; break;
         }
-
+        AppLog.d(TAG, "move(" + direction + ", " + pwm + ")");
+        isMoving = true;
+        lastCommand = "move:" + direction + ":" + pwm;
         setDesiredState(x, y, 0);
     }
 
-    public void rotate(String direction, float speed) {
-        Log.i(TAG, "rotate: " + direction + " speed=" + speed);
-        isMoving = true;
-        lastCommand = "rotate:" + direction + ":" + speed;
-
-        int ms = (int) (speed * 255);
+    public void rotate(String direction, int pwm) {
         int r = 0;
-
         switch (direction.toLowerCase()) {
-            case "left":  r = -ms; break;
-            case "right": r =  ms; break;
+            case "left":  r = -pwm; break;
+            case "right": r =  pwm; break;
         }
-
+        AppLog.d(TAG, "rotate(" + direction + ", " + pwm + ")");
+        isMoving = true;
+        lastCommand = "rotate:" + direction + ":" + pwm;
         setDesiredState(0, 0, r);
     }
 
     public void stop() {
-        Log.i(TAG, "stop");
+        AppLog.d(TAG, "stop()");
         isMoving = false;
         lastCommand = "stop";
+        liftSpeed = 0;
+        ScheduledFuture<?> prev = pendingAutoStop;
+        if (prev != null) prev.cancel(false);
         latestMotorSpeeds = new int[]{0, 0, 0, 0, 0, 0};
+        // Send zeros immediately rather than waiting for the next sender tick.
+        senderExecutor.execute(this::sendCurrentState);
     }
 
-    /**
-     * Bypass the mixing formula and send exact per-motor values.
-     * Useful for diagnosing wiring: call from JS with rawMotors([255,0,0,0,0,0])
-     * to spin just motor 0, etc.
-     * Expected: 6 values for [FL, FR, LIFT, BL, BR, LIFT], range -255..255.
-     */
-    public void setRawSpeeds(int[] speeds) {
-        if (speeds == null || speeds.length < 6) return;
-        latestMotorSpeeds = speeds;
-        Log.d(TAG, "rawMotors: " + Arrays.toString(latestMotorSpeeds));
+    public void endSession() {
+        autoStopEnabled = false;
+        stop();
     }
+
+    public void setRawSpeeds(int[] speeds) {
+        if (speeds == null || speeds.length == 0) return;
+        int[] padded = new int[6];
+        for (int i = 0; i < Math.min(6, speeds.length); i++) padded[i] = speeds[i];
+        ScheduledFuture<?> prev = pendingAutoStop;
+        if (prev != null) prev.cancel(false);
+        latestMotorSpeeds = padded;
+        AppLog.d(TAG, "rawMotors → " + Arrays.toString(padded));
+    }
+
+    private void setDesiredState(int x, int y, int r) {
+        latestMotorSpeeds = computeMotorSpeeds(x, y, r);
+        AppLog.d(TAG, "desired → " + Arrays.toString(latestMotorSpeeds));
+        if (autoStopEnabled) {
+            ScheduledFuture<?> prev = pendingAutoStop;
+            if (prev != null) prev.cancel(false);
+            pendingAutoStop = autoStopExecutor.schedule(() -> {
+                AppLog.d(TAG, "auto-stop fired");
+                stop();
+            }, AUTO_STOP_MS, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    int[] computeMotorSpeeds(int x, int y, int r) {
+        // Array layout: [FL(0), BL(1), LIFT1(2), FR(3), BR(4), LIFT2(5)]
+        // FR (index 3) wired reversed → negate its value in the output
+        // LIFT1 and LIFT2 are mounted mirror-image, so the SAME PWM value drives the
+        // same lift motion — both channels get identical liftSpeed (see setLiftSpeed).
+        int fl = clamp(y + x + r);
+        int bl = clamp(y - x + r);
+        int fr = clamp(y - x - r);
+        int br = clamp(y + x - r);
+        int ls = clamp(liftSpeed);
+        return new int[]{fl, bl, ls, -fr, br, ls};
+    }
+
+    public void setLiftSpeed(int speed) {
+        liftSpeed = Math.max(-SerialProtocol.MAX_PWM, Math.min(SerialProtocol.MAX_PWM, speed));
+        int[] current = latestMotorSpeeds.clone();
+        current[2] = liftSpeed;
+        current[5] = liftSpeed;
+        latestMotorSpeeds = current;
+        AppLog.d(TAG, "lift → " + liftSpeed);
+    }
+
+    public void setLiftSpeedTimed(int speed, int ms) {
+        ScheduledFuture<?> prev = pendingLiftStop;
+        if (prev != null) prev.cancel(false);
+        setLiftSpeed(speed);
+        if (ms > 0) {
+            pendingLiftStop = senderExecutor.schedule(
+                () -> setLiftSpeed(0), ms, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private int clamp(int v) { return Math.max(-SerialProtocol.MAX_PWM, Math.min(SerialProtocol.MAX_PWM, v)); }
 
     public boolean isMoving() { return isMoving; }
     public String getLastCommand() { return lastCommand; }
-    public int[] getMotorValues() { return new int[]{robotX, robotY, robotR, 0}; }
 
     public RobotStatus getStatus() {
         RobotStatus s = new RobotStatus();
@@ -140,54 +178,12 @@ public class RobotController {
         return s;
     }
 
-    /**
-     * Motor mixing for a 4-wheel drive chassis.
-     * Indices: m[0]=FL, m[1]=FR, m[2]=LIFT(0), m[3]=BL, m[4]=BR, m[5]=LIFT(0).
-     * x = strafe (positive = right), y = drive (positive = forward in code convention),
-     * r = rotation (positive = clockwise when viewed from above).
-     *
-     * If rotate still drives the robot straight after physical testing, the left/right
-     * motor indices (0+3 vs 1+4) don't match your wiring — use rawMotors() in JS
-     * to identify which motor index is which physical wheel, then swap accordingly.
-     */
-    int[] computeMotorSpeeds(int x, int y, int r) {
-        int fl = clamp(y + x + r);
-        int fr = clamp(y - x - r);
-        int bl = clamp(y + x - r);  // note: y+x-r keeps BL in phase with FL for differential
-        int br = clamp(y - x + r);
-        return new int[]{fl, fr, 0, bl, br, 0};
-    }
-
-    private int clamp(int v) { return Math.max(-255, Math.min(255, v)); }
-
-    private void setDesiredState(int x, int y, int r) {
-        robotX = x; robotY = y; robotR = r;
-        if (usbSerial != null && usbSerial.isConnected()) {
-            latestMotorSpeeds = computeMotorSpeeds(x, y, r);
-            Log.d(TAG, "desiredMotors: " + Arrays.toString(latestMotorSpeeds));
-        } else {
-            // UDP fallback (dev mode without USB cable)
-            sendUdp(x, y, r);
-        }
-    }
-
-    private void sendUdp(int x, int y, int r) {
-        if (udpSocket == null || udpSocket.isClosed()) return;
-        new Thread(() -> {
-            try {
-                String cmd = x + "," + y + "," + r + ",0";
-                byte[] b = cmd.getBytes();
-                udpSocket.send(new DatagramPacket(b, b.length, InetAddress.getByName(robotIp), ROBOT_UDP_PORT));
-            } catch (Exception e) {
-                Log.e(TAG, "UDP send failed: " + e.getMessage());
-            }
-        }).start();
-    }
-
     public void shutdown() {
-        latestMotorSpeeds = new int[]{0, 0, 0, 0, 0, 0};
-        motorLoop.shutdown();
-        if (udpSocket != null && !udpSocket.isClosed()) udpSocket.close();
+        senderExecutor.shutdownNow();
+        autoStopExecutor.shutdownNow();
+        if (usbSerial != null && usbSerial.isConnected()) {
+            try { usbSerial.write(SerialProtocol.motorCommand(new int[]{0,0,0,0,0,0})); } catch (Exception ignored) {}
+        }
     }
 
     public static class RobotStatus {
