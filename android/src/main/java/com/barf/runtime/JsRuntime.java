@@ -235,9 +235,17 @@ public class JsRuntime {
         }
     }
 
+    // Cap the output buffer so a long-running onDetection session (which only
+    // clears at script start) can't grow it unbounded into an OOM.
+    private static final int MAX_OUTPUT_CHARS = 32000;
+
     private void appendOutput(String message) {
         String timestamp = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
         output.append("[").append(timestamp).append("] ").append(message).append("\n");
+        if (output.length() > MAX_OUTPUT_CHARS) {
+            int cut = output.indexOf("\n", output.length() - MAX_OUTPUT_CHARS);
+            output.delete(0, cut >= 0 ? cut + 1 : output.length() - MAX_OUTPUT_CHARS);
+        }
         AppLog.js(TAG, message);
     }
 

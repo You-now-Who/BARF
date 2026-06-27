@@ -14,6 +14,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.content.pm.ActivityInfo;
+import android.text.Editable;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
@@ -153,14 +155,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
         btnTabJs = findViewById(R.id.btnTabJs);
 
         // Wire in-app loggers
-        AppLog.setListener(line -> mainHandler.post(() -> {
-            tvLog.append(line + "\n");
-            scrollLog.post(() -> scrollLog.fullScroll(View.FOCUS_DOWN));
-        }));
-        AppLog.setJsListener(line -> mainHandler.post(() -> {
-            tvLogJs.append(line + "\n");
-            scrollLogJs.post(() -> scrollLogJs.fullScroll(View.FOCUS_DOWN));
-        }));
+        AppLog.setListener(line -> mainHandler.post(() -> appendLog(tvLog, scrollLog, line)));
+        AppLog.setJsListener(line -> mainHandler.post(() -> appendLog(tvLogJs, scrollLogJs, line)));
 
         // Tab buttons
         btnTabSys.setOnClickListener(v -> showLogTab(0));
@@ -255,6 +251,37 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback, Ph
             accelerometer = sensorManager.getDefaultSensor(android.hardware.Sensor.TYPE_ACCELEROMETER);
         }
         startServer();
+    }
+
+    // Keep the on-screen log views bounded. AppLog caps its deque at 400 lines,
+    // but TextView.append() grows the backing Editable forever — at frame-rate
+    // logging it eats the whole heap and OOMs (was crashing at append()).
+    private static final int MAX_LOG_LINES = 400;
+
+    /** Append a line, then trim the oldest lines so the Editable can't grow unbounded. */
+    private void appendLog(TextView tv, ScrollView scroll, String line) {
+        tv.append(line + "\n");
+
+        CharSequence text = tv.getText();
+        if (!(text instanceof Editable)) return; // append() makes it Editable; defensive
+        Editable e = (Editable) text;
+
+        int newlines = 0;
+        for (int i = 0; i < e.length(); i++) {
+            if (e.charAt(i) == '\n') newlines++;
+        }
+        if (newlines > MAX_LOG_LINES) {
+            int drop = newlines - MAX_LOG_LINES;
+            int cut = 0;
+            for (int i = 0; i < drop; i++) {
+                int nl = TextUtils.indexOf(e, '\n', cut);
+                if (nl < 0) { cut = e.length(); break; }
+                cut = nl + 1;
+            }
+            e.delete(0, cut);
+        }
+
+        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private void showLogTab(int idx) {
