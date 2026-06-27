@@ -50,5 +50,5 @@ tools/yolo11n.pt
 tools/yolo11n_balls*
 tools/yolo11n.ncnn.*
 
-# PlatformIO firmware project (separate workflow, not ready to track)
-sdk/firmware_platformio/
+# PlatformIO firmware project — source is tracked; its own nested
+# .gitignore excludes build output (.pio/) and IDE caches.
